@@ -81,6 +81,10 @@
 //!   and record it atomically with verification and the refund.
 //! * Operations on the Client's balance and blinding factors, and on the
 //!   Moderator's signing key, are constant time with respect to those values.
+//!   The exception is point addition in the BoringSSL backend, which branches
+//!   when its operands are equal or negatives of each other; when a secret
+//!   operand is random and independent of the other, the branch is taken
+//!   with negligible probability.
 //! * Secrets are zeroized on drop.
 
 #![no_std]

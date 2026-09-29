@@ -92,7 +92,8 @@ pub trait Scalar:
 ///
 /// Points are not required to be `Copy`: the BoringSSL backend keeps a heap
 /// handle so that intermediate values, some of which depend on secrets, are
-/// never decompressed again. Arithmetic is constant time in both operands.
+/// never decompressed again. Arithmetic is constant time in both operands,
+/// except the BoringSSL backend's addition of equal or opposite points.
 pub trait Point: Clone + Debug + PartialEq + Eq + Sized {
     /// The associated scalar type.
     type Scalar: Scalar;

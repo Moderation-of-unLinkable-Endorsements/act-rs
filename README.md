@@ -146,7 +146,11 @@ named alongside.
 * Operations on the Client's balance and blinding factors, and on the
   Moderator's signing key, are constant time in those values; both backends
   use constant-time scalar and point arithmetic, and `Bits` selects with
-  `subtle`.
+  `subtle`. The exception is point addition in the BoringSSL backend: BoringSSL
+  exports no complete constant-time addition, and `EC_POINT_add` branches
+  when its operands are equal or negatives of each other. When a secret
+  operand is random and independent of the other, the branch is taken with
+  negligible probability.
 * `prove_spend` consumes the Credential, and `finalize_issue` and
   `finalize_refund` consume their state, so no value is used twice within a
   process. Persisted copies are the wallet's responsibility.

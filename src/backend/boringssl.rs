@@ -20,7 +20,11 @@
 //! `BN_mod_exp_mont_consttime` for inversion. Points are heap `EC_POINT`
 //! handles in projective form, so that values derived from secrets are
 //! never re-parsed from a compressed encoding; P-256 point arithmetic in
-//! BoringSSL is constant time. Hash-to-curve, SHA-256, and randomness are
+//! BoringSSL is constant time, with one exception. BoringSSL exports no
+//! complete constant-time addition, and `EC_POINT_add` branches when its
+//! operands are equal or negatives of each other. When a secret operand is
+//! random and independent of the other, the branch is taken with negligible
+//! probability. Hash-to-curve, SHA-256, and randomness are
 //! BoringSSL's as well. SHAKE128 is the exception: BoringSSL implements
 //! Keccak but does not export it, so [`super::shake::RustCryptoShake128`] stands
 //! in until it does.
@@ -437,6 +441,8 @@ impl super::Point for Point {
 
     fn add(&self, other: &Self) -> Self {
         let mut r = Self::new();
+        // Not constant time when the operands are equal or negatives of each
+        // other; see the module documentation.
         // SAFETY: all pointers are valid; `ctx` may be null.
         let ret = unsafe {
             bssl_sys::EC_POINT_add(
