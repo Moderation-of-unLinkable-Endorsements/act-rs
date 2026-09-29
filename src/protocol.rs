@@ -144,7 +144,7 @@ impl<B: Backend> SecretKey<B> {
     /// `G.DeriveKeyPair(seed, info)`: a key pair from a seed of `Nseed`
     /// uniformly random bytes that is used for nothing else.
     pub fn from_seed(seed: &[u8; NSEED], info: &[u8]) -> Result<Self, Error> {
-        Ok(Self::from_scalar(hash::derive_scalar::<B>(seed, info)?))
+        Ok(Self::from_scalar(hash::derive_key_scalar::<B>(seed, info)?))
     }
 
     /// The key pair whose secret scalar is `bytes`, big-endian.
@@ -413,10 +413,10 @@ fn signing_exponent<B: Backend, R: Random>(
 ) -> Result<(B::Scalar, B::Scalar), Error> {
     let x_a_bytes = x_a.to_bytes().ok_or(Error::Verify)?;
     let label_len = u16::try_from(label.len()).map_err(|_| Error::InvalidInput)?;
-    let mut aux = [0u8; NSEED];
-    rng.fill(&mut aux);
+    let mut rand = [0u8; NSEED];
+    rng.fill(&mut rand);
     let mut sk_bytes = key.sk.to_bytes();
-    let e = hash::derive_nonce::<B>(
+    let e = hash::derive_nonces::<B>(
         &sk_bytes,
         b"e",
         &[
@@ -425,11 +425,11 @@ fn signing_exponent<B: Backend, R: Random>(
             &(POINT_LENGTH as u16).to_be_bytes(),
             &x_a_bytes,
         ],
-        &aux,
+        &rand,
     );
     sk_bytes.zeroize();
-    aux.zeroize();
-    let e = e?;
+    rand.zeroize();
+    let e = e?[0];
     let x = e + key.sk;
     if bool::from(x.is_zero()) {
         return Err(Error::Derive);
@@ -491,13 +491,6 @@ fn bits<B: Backend>(x: u64, l: usize) -> Vec<B::Scalar> {
         .collect()
 }
 
-/// `Seed(rand, index)`.
-fn seed(rand: &[u8], index: usize) -> Result<&[u8; NSEED], Error> {
-    rand.get(index * NSEED..(index + 1) * NSEED)
-        .and_then(|chunk| chunk.try_into().ok())
-        .ok_or(Error::InvalidInput)
-}
-
 fn proof_array<const N: usize>(bytes: Vec<u8>) -> Result<[u8; N], Error> {
     bytes.try_into().map_err(|_| Error::Verify)
 }
@@ -510,29 +503,24 @@ pub(crate) fn point_bytes<P: Point>(point: &P) -> [u8; POINT_LENGTH] {
     point.to_bytes().unwrap_or([0; POINT_LENGTH])
 }
 
-/// A range block over `value`: the bit commitments `Com[j] = b[j] * H1 +
-/// s[j] * H3`, with the bits, blindings, and products `u[j] = (1 - b[j]) *
-/// s[j]` appended to `witness` in that order. Returns the commitments and
-/// `sum_j 2^j * s[j]`, the block's contribution to the blinding factor of
-/// the refunded Credential. Constant time in `value`.
+/// A range block over `value` with blindings `s`: the bit commitments
+/// `Com[j] = b[j] * H1 + s[j] * H3`, with the bits, blindings, and products
+/// `u[j] = (1 - b[j]) * s[j]` appended to `witness` in that order. Returns the
+/// commitments and `sum_j 2^j * s[j]`, the block's contribution to the
+/// blinding factor of the refunded Credential. Constant time in `value`.
 fn range_block<B: Backend>(
     gens: &Generators<B>,
     l: usize,
     value: u64,
-    label: &[u8; 2],
-    rand: &[u8],
-    next_seed: usize,
+    s: &[B::Scalar],
     witness: &mut Vec<B::Scalar>,
 ) -> Result<(Vec<B::Point>, B::Scalar), Error> {
     let one = B::Scalar::from(1);
     let mut bits = bits::<B>(value, l);
-    let mut blindings = Vec::with_capacity(l);
+    let mut blindings = s.get(..l).ok_or(Error::InvalidInput)?.to_vec();
     let mut commitments = Vec::with_capacity(l);
-    for (j, bit) in bits.iter().enumerate() {
-        let info = [label[0], label[1], j as u8];
-        let blinding = hash::derive_scalar::<B>(seed(rand, next_seed + j)?, &info)?;
-        commitments.push(fixed::<B, 2>([(&gens.h1, bit), (&gens.h3, &blinding)]));
-        blindings.push(blinding);
+    for (bit, blinding) in bits.iter().zip(&blindings) {
+        commitments.push(fixed::<B, 2>([(&gens.h1, bit), (&gens.h3, blinding)]));
     }
     let mut products: Vec<B::Scalar> = bits
         .iter()
@@ -567,10 +555,11 @@ pub(crate) fn issue_request_with<B: Backend, R: Random>(
     let gens = &params.gens;
     let mut rand = [0u8; 2 * NSEED];
     rng.fill(&mut rand);
-    let k = hash::derive_scalar::<B>(seed(&rand, 0)?, b"k");
-    let r = hash::derive_scalar::<B>(seed(&rand, 1)?, b"r");
+    let derived = hash::derive_scalars::<B>(&rand, b"IssueRequest");
     rand.zeroize();
-    let (k, r) = (k?, r?);
+    let mut derived = derived?;
+    let (k, r) = (derived[0], derived[1]);
+    derived.zeroize();
 
     let k_commitment = fixed::<B, 2>([(&gens.h2, &k), (&gens.h3, &r)]);
     let statement = Commitment {
@@ -726,10 +715,10 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
     let seeds = 4 + if s > 0 { l } else { 1 } + if a > 0 { l } else { 0 };
     let mut rand = alloc::vec![0u8; seeds * NSEED];
     rng.fill(&mut rand);
-    let mut r1 = hash::derive_scalar::<B>(seed(&rand, 0)?, b"r1")?;
-    let mut r2 = hash::derive_scalar::<B>(seed(&rand, 1)?, b"r2")?;
-    let kstar = hash::derive_scalar::<B>(seed(&rand, 2)?, b"kstar")?;
-    let mut rn = hash::derive_scalar::<B>(seed(&rand, 3)?, b"rn")?;
+    let derived = hash::derive_scalars::<B>(&rand, b"ProveSpend");
+    rand.zeroize();
+    let mut derived = derived?;
+    let (mut r1, mut r2, kstar, mut rn) = (derived[0], derived[1], derived[2], derived[3]);
     let mut next_seed = 4;
 
     // Rerandomize the signature.
@@ -760,12 +749,12 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
     let r_star;
     if s > 0 {
         let (commitments, blinding_sum) =
-            range_block::<B>(gens, l, v1, b"s1", &rand, next_seed, &mut witness)?;
+            range_block::<B>(gens, l, v1, &derived[next_seed..], &mut witness)?;
         com1 = commitments;
         r_star = rn + blinding_sum;
         next_seed += l;
     } else {
-        let mut rc = hash::derive_scalar::<B>(seed(&rand, next_seed)?, b"rc")?;
+        let mut rc = derived[next_seed];
         com_c = Some(fixed::<B, 2>([(&gens.h1, &c_scalar), (&gens.h3, &rc)]));
         r_star = rn + rc;
         witness.push(rc);
@@ -775,11 +764,10 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
 
     // Commit to the topped-up balance when there is a top-up.
     if a > 0 {
-        let (commitments, _) =
-            range_block::<B>(gens, l, v2, b"s2", &rand, next_seed, &mut witness)?;
+        let (commitments, _) = range_block::<B>(gens, l, v2, &derived[next_seed..], &mut witness)?;
         com2 = commitments;
     }
-    rand.zeroize();
+    derived.zeroize();
 
     let h1_prime = fixed::<B, 2>([(&gens.h2, &credential.k), (&gens.h4, &ctx)]).add(&gens.g);
     let statement = Spend::new(

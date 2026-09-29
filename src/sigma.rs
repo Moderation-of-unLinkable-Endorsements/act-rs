@@ -25,12 +25,12 @@
 use alloc::vec::Vec;
 
 use subtle::ConstantTimeEq;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::backend::{
     Backend, ORDER, POINT_LENGTH, Point, SCALAR_LENGTH, Scalar, Shake128, Shake128Reader,
 };
-use crate::hash::{self, NSEED, NoncePrefix};
+use crate::hash::{self, NSEED};
 use crate::random::Random;
 use crate::{Error, PROTOCOL_CONTEXT};
 
@@ -218,41 +218,30 @@ impl<'a> RelationWriter<'a> {
     }
 }
 
-/// `ProverNonces` of the draft: one nonce per witness scalar, each derived
-/// with `DeriveNonce` from the witness, the session, the relation, and its
-/// own `Nseed` bytes of fresh randomness.
+/// `ProverNonces` of the draft: one nonce per witness scalar, all derived
+/// together with `DeriveNonces` from the witness, the session, the relation,
+/// and `Nseed` bytes of fresh randomness per nonce.
 fn prover_nonces<B: Backend, R: Random>(
     witness: &[B::Scalar],
     session_id: &[u8; 32],
     relation: &[u8],
     rng: &mut R,
-) -> Result<Vec<B::Scalar>, Error> {
+) -> Result<Zeroizing<Vec<B::Scalar>>, Error> {
+    let relation_len = u32::try_from(relation.len()).map_err(|_| Error::InvalidInput)?;
     let mut secret = Vec::with_capacity(witness.len() * SCALAR_LENGTH);
     for scalar in witness {
         secret.extend_from_slice(&scalar.to_bytes());
     }
-    let relation_len = u32::try_from(relation.len()).map_err(|_| Error::InvalidInput)?;
-    // The instance is `session_id || I2OSP(len(relation), 4) || relation ||
-    // I2OSP(i, 4)`; the counter comes last, so one hash prefix serves all.
-    let prefix = NoncePrefix::<B>::with_trailing(
+    let mut rand = alloc::vec![0u8; witness.len() * NSEED];
+    rng.fill(&mut rand);
+    // The instance is `session_id || I2OSP(len(relation), 4) || relation`.
+    let nonces = hash::derive_nonces::<B>(
         &secret,
         b"nonce",
         &[session_id, &relation_len.to_be_bytes(), relation],
-        4,
+        &rand,
     );
     secret.zeroize();
-    let prefix = prefix?;
-
-    let mut rand = alloc::vec![0u8; witness.len() * NSEED];
-    rng.fill(&mut rand);
-    let nonces = rand
-        .chunks_exact(NSEED)
-        .enumerate()
-        .map(|(i, aux)| {
-            let aux: &[u8; NSEED] = aux.try_into().map_err(|_| Error::InvalidInput)?;
-            prefix.derive(&(i as u32).to_be_bytes(), aux)
-        })
-        .collect();
     rand.zeroize();
     nonces
 }

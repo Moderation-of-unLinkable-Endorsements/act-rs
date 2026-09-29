@@ -14,8 +14,9 @@ the balance and cannot link a spend to the issuance or refund that produced
 the Credential, nor two spends to each other.
 
 The implementation tracks the draft at commit
-[`d00085f`](https://github.com/Moderation-of-unLinkable-Endorsements/internet-drafts/commit/d00085f1af56ee4add0d71bc949108b234192776)
-of the drafts repository and reproduces its test vectors byte for byte.
+[`a7ba1c0`](https://github.com/Moderation-of-unLinkable-Endorsements/internet-drafts/commit/a7ba1c0561b4465a2ebeac5719ffdd7b562db3e9)
+of the drafts repository, whose scalar derivation is that of
+draft-authors-mole-rollatini, and reproduces its test vectors byte for byte.
 
 ## Usage
 
@@ -134,8 +135,6 @@ format is unchanged; the specialization lets the code:
   for the four), and
   evaluate the remaining terms as one multi-scalar multiplication where the
   backend offers it;
-* derive the prover's nonces from one SHA-256 midstate, since `DeriveNonce`
-  hashes the same witness and relation for every nonce;
 * cache the session identifiers of the fixed tags.
 
 The identity checks that `ValidateInstance` requires of a verifier are made

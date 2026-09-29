@@ -13,11 +13,14 @@
 // limitations under the License.
 
 //! Hashing and derivation under the ACT protocol context: RFC 9380's
-//! `expand_message_xmd` over SHA-256, and the IHAT group's `HashToScalar`,
-//! `DeriveScalar`, and `DeriveNonce`.
+//! `expand_message_xmd` over SHA-256, and the Rollatini group's
+//! `HashToScalar`, `DeriveScalars`, `SeedsToScalars`, `DeriveNonces`, and
+//! `DeriveKeyPair`.
+
+use alloc::vec::Vec;
 
 use subtle::CtOption;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::Error;
 use crate::backend::{Backend, SCALAR_LENGTH, Scalar, Sha256};
@@ -26,21 +29,23 @@ use crate::backend::{Backend, SCALAR_LENGTH, Scalar, Sha256};
 pub(crate) const DST_HASH_TO_GROUP: &[u8] = b"HashToGroup-ACTv1-P256-SHA256";
 /// Domain separation tag of `HashToScalar`.
 pub(crate) const DST_HASH_TO_SCALAR: &[u8] = b"HashToScalar-ACTv1-P256-SHA256";
-const DST_DERIVE_SCALAR: &[u8] = b"DeriveScalar-ACTv1-P256-SHA256";
-const DST_DERIVE_NONCE: &[u8] = b"DeriveNonce-ACTv1-P256-SHA256";
+const DST_DERIVE_SCALARS: &[u8] = b"DeriveScalars-ACTv1-P256-SHA256";
+const DST_SEEDS_TO_SCALARS: &[u8] = b"SeedsToScalars-ACTv1-P256-SHA256";
+const DST_DERIVE_NONCES: &[u8] = b"DeriveNonces-ACTv1-P256-SHA256";
+const DST_DERIVE_KEY_PAIR: &[u8] = b"DeriveKeyPair-ACTv1-P256-SHA256";
 
 /// The seed length `Nseed`.
 pub(crate) const NSEED: usize = crate::SEED_LENGTH;
 
-/// Output length of every `expand_message_xmd` call in the draft.
+/// Output length of the `expand_message_xmd` calls that produce seeds and
+/// scalars.
 const XMD_LENGTH: usize = 48;
+
+/// Length of the keys of `SeedsToScalars`, the hash output length `Nh`.
+const NH: usize = 32;
 
 /// `expand_message_xmd` with SHA-256 (RFC 9380, Section 5.3.1), with the
 /// message split into a prefix absorbed once and a suffix supplied per call.
-///
-/// `DeriveNonce` hashes the same witness and relation for every nonce of a
-/// proof; sharing the prefix state makes that cost linear instead of
-/// quadratic in the relation size.
 pub(crate) struct XmdPrefix<H: Sha256> {
     hasher: H,
 }
@@ -66,7 +71,8 @@ impl<H: Sha256> XmdPrefix<H> {
     /// `expand_message_xmd(prefix || suffix, dst, len(out))`.
     ///
     /// `dst` is at most 255 bytes and `out` at most `255 * 32` bytes; the
-    /// tags of this crate are short constants and every output is 48 bytes.
+    /// tags of this crate are short constants and every output is 32 or 48
+    /// bytes.
     pub(crate) fn expand_into(&self, suffix: &[&[u8]], dst: &[u8], out: &mut [u8]) {
         debug_assert!(dst.len() <= 255 && out.len() <= 255 * 32);
         let dst_prime_tail = [dst.len() as u8];
@@ -141,18 +147,113 @@ pub(crate) fn hash_to_scalar<B: Backend>(msg: &[&[u8]], dst: &[u8]) -> B::Scalar
     scalar
 }
 
-/// `G.DeriveScalar(seed, info)`: a nonzero scalar from a fresh seed.
+/// `G.DeriveScalars(rand, info)`: one scalar from each `Nseed` bytes of
+/// `rand`, under a key that `info` determines.
+pub(crate) fn derive_scalars<B: Backend>(
+    rand: &[u8],
+    info: &[u8],
+) -> Result<Zeroizing<Vec<B::Scalar>>, Error> {
+    let info_len = u16::try_from(info.len()).map_err(|_| Error::InvalidInput)?;
+    let mut key = [0u8; NH];
+    XmdPrefix::<B::Sha256>::new(&[]).expand_into(
+        &[&info_len.to_be_bytes(), info],
+        DST_DERIVE_SCALARS,
+        &mut key,
+    );
+    seeds_to_scalars::<B>(&key, rand)
+}
+
+/// `G.DeriveNonces(secret, label, instance, rand)`: one nonce from each
+/// `Nseed` bytes of `rand`, under a key derived from the secret and the
+/// operation. `instance` is supplied in parts and hashed as their
+/// concatenation.
+pub(crate) fn derive_nonces<B: Backend>(
+    secret: &[u8],
+    label: &[u8],
+    instance: &[&[u8]],
+    rand: &[u8],
+) -> Result<Zeroizing<Vec<B::Scalar>>, Error> {
+    let label_len = u16::try_from(label.len()).map_err(|_| Error::InvalidInput)?;
+    let secret_len = u32::try_from(secret.len()).map_err(|_| Error::InvalidInput)?;
+    let instance_len = instance.iter().map(|part| part.len()).sum::<usize>();
+    let instance_len = u32::try_from(instance_len).map_err(|_| Error::InvalidInput)?;
+    let (label_len, secret_len, instance_len) = (
+        label_len.to_be_bytes(),
+        secret_len.to_be_bytes(),
+        instance_len.to_be_bytes(),
+    );
+    let mut parts: Vec<&[u8]> = alloc::vec![&label_len, label, &secret_len, secret, &instance_len];
+    parts.extend_from_slice(instance);
+    let mut key = [0u8; NH];
+    XmdPrefix::<B::Sha256>::new(&[]).expand_into(&parts, DST_DERIVE_NONCES, &mut key);
+    let nonces = seeds_to_scalars::<B>(&key, rand);
+    key.zeroize();
+    nonces
+}
+
+/// `G.SeedsToScalars(key, rand)`: a four-round Feistel network over all of
+/// `rand`, keyed by `key`, then each `Nseed`-byte piece of the result
+/// reduced modulo the order. The network is a permutation for every key, so
+/// uniform input gives scalars each within about `2^-128` of uniform. With
+/// the round functions modeled as random oracles, a change to any part of an
+/// input chosen without reference to them changes every scalar, except with
+/// negligible probability.
+pub(crate) fn seeds_to_scalars<B: Backend>(
+    key: &[u8; NH],
+    rand: &[u8],
+) -> Result<Zeroizing<Vec<B::Scalar>>, Error> {
+    if rand.is_empty() || rand.len() % NSEED != 0 {
+        return Err(Error::InvalidInput);
+    }
+    let half = rand.len() / 2;
+    let mut left = Zeroizing::new(rand[..half].to_vec());
+    let mut right = Zeroizing::new(rand[half..].to_vec());
+    let mut mask = Zeroizing::new(alloc::vec![0u8; half.div_ceil(XMD_LENGTH) * XMD_LENGTH]);
+    for i in 0..4u8 {
+        for (j, chunk) in mask.chunks_exact_mut(XMD_LENGTH).enumerate() {
+            let j = u32::try_from(j).map_err(|_| Error::InvalidInput)?;
+            XmdPrefix::<B::Sha256>::new(&[key, &[i], &j.to_be_bytes(), &right]).expand_into(
+                &[],
+                DST_SEEDS_TO_SCALARS,
+                chunk,
+            );
+        }
+        for (byte, m) in left.iter_mut().zip(mask.iter()) {
+            *byte ^= m;
+        }
+        core::mem::swap(&mut left, &mut right);
+    }
+    // Copy into a buffer allocated at full size, so that no reallocation
+    // frees secret bytes before they are wiped.
+    let mut permuted = Zeroizing::new(Vec::with_capacity(rand.len()));
+    permuted.extend_from_slice(&left);
+    permuted.extend_from_slice(&right);
+    let mut scalars = Zeroizing::new(Vec::with_capacity(permuted.len() / NSEED));
+    let mut result = Ok(());
+    for piece in permuted.chunks_exact(NSEED) {
+        let piece: &[u8; XMD_LENGTH] = piece.try_into().map_err(|_| Error::InvalidInput)?;
+        let scalar = reduce_be_48::<B>(piece);
+        if bool::from(scalar.is_zero()) {
+            result = Err(Error::Derive);
+        }
+        scalars.push(scalar);
+    }
+    result.map(|()| scalars)
+}
+
+/// The secret scalar of `G.DeriveKeyPair(seed, info)`, as in RFC 9497,
+/// Section 3.2.1, under the ACT protocol context.
 ///
 /// The counter loop exits on the first nonzero output, a branch taken with
 /// probability about `2^-256`; the draft specifies it.
-pub(crate) fn derive_scalar<B: Backend>(
+pub(crate) fn derive_key_scalar<B: Backend>(
     seed: &[u8; NSEED],
     info: &[u8],
 ) -> Result<B::Scalar, Error> {
     let info_len = u16::try_from(info.len()).map_err(|_| Error::InvalidInput)?;
     let prefix = XmdPrefix::<B::Sha256>::new(&[seed, &info_len.to_be_bytes(), info]);
     for counter in 0..=u8::MAX {
-        let mut uniform = prefix.expand(&[&[counter]], DST_DERIVE_SCALAR);
+        let mut uniform = prefix.expand(&[&[counter]], DST_DERIVE_KEY_PAIR);
         let scalar = reduce_be_48::<B>(&uniform);
         uniform.zeroize();
         if !bool::from(scalar.is_zero()) {
@@ -160,70 +261,6 @@ pub(crate) fn derive_scalar<B: Backend>(
         }
     }
     Err(Error::Derive)
-}
-
-/// `G.DeriveNonce(secret, label, instance, aux)`: a scalar that is a
-/// pseudorandom function of the secret and the instance, refreshed by `aux`.
-pub(crate) fn derive_nonce<B: Backend>(
-    secret: &[u8],
-    label: &[u8],
-    instance: &[&[u8]],
-    aux: &[u8; NSEED],
-) -> Result<B::Scalar, Error> {
-    NoncePrefix::<B>::with_trailing(secret, label, instance, 0)?.derive(&[], aux)
-}
-
-/// The fixed part of a `DeriveNonce` input: everything but the trailing
-/// bytes of `instance` and `aux`.
-pub(crate) struct NoncePrefix<B: Backend> {
-    xmd: XmdPrefix<B::Sha256>,
-    label: alloc::vec::Vec<u8>,
-}
-
-impl<B: Backend> NoncePrefix<B> {
-    /// Absorbs `U16Prefixed(label) || I2OSP(len(secret), 4) || secret ||
-    /// I2OSP(instance_len, 4) || instance`, where `instance_len` counts the
-    /// bytes of `instance` plus `trailing` bytes supplied to [`Self::derive`].
-    pub(crate) fn with_trailing(
-        secret: &[u8],
-        label: &[u8],
-        instance: &[&[u8]],
-        trailing: usize,
-    ) -> Result<Self, Error> {
-        let label_len = u16::try_from(label.len()).map_err(|_| Error::InvalidInput)?;
-        let secret_len = u32::try_from(secret.len()).map_err(|_| Error::InvalidInput)?;
-        let instance_len = instance.iter().map(|part| part.len()).sum::<usize>() + trailing;
-        let instance_len = u32::try_from(instance_len).map_err(|_| Error::InvalidInput)?;
-        let (label_len_bytes, secret_len_bytes, instance_len_bytes) = (
-            label_len.to_be_bytes(),
-            secret_len.to_be_bytes(),
-            instance_len.to_be_bytes(),
-        );
-        let mut parts: alloc::vec::Vec<&[u8]> = alloc::vec![
-            &label_len_bytes,
-            label,
-            &secret_len_bytes,
-            secret,
-            &instance_len_bytes
-        ];
-        parts.extend_from_slice(instance);
-        Ok(Self {
-            xmd: XmdPrefix::new(&parts),
-            label: label.to_vec(),
-        })
-    }
-
-    /// Completes the input with `trailing || U16Prefixed(aux)` and derives
-    /// the nonce with `DeriveScalar(seed, label)`.
-    pub(crate) fn derive(&self, trailing: &[u8], aux: &[u8; NSEED]) -> Result<B::Scalar, Error> {
-        let aux_len = (NSEED as u16).to_be_bytes();
-        let mut seed = self
-            .xmd
-            .expand(&[trailing, &aux_len, aux], DST_DERIVE_NONCE);
-        let scalar = derive_scalar::<B>(&seed, &self.label);
-        seed.zeroize();
-        scalar
-    }
 }
 
 /// Checks that a `CtOption` holds a value, mapping absence to `error`.

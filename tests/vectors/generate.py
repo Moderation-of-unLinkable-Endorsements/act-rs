@@ -16,7 +16,7 @@
 implementation, in the draft's `key = value` format.
 
 Run from the `poc/` directory of the internet-drafts repository at commit
-d00085f1af56ee4add0d71bc949108b234192776, with its virtual environment and
+a7ba1c0561b4465a2ebeac5719ffdd7b562db3e9, with its virtual environment and
 the sigma-protocols submodule set up as its README describes:
 
     python generate.py L "s:a:t,s:a:t,..." [initial_balance] > act-L<L>.txt
@@ -38,7 +38,7 @@ reproducible; each `rand` entry records the bytes the algorithm consumed.
 import sys
 from hashlib import shake_128
 
-from ihat import common
+from rollatini import common
 from act import protocol as act, wire
 from act.vectors import entry, Source
 
@@ -51,7 +51,7 @@ CTX_SPEND = b"ACT-test-vectors-challenge-digest"
 
 class LSource(Source):
     def __init__(self):
-        super().__init__()
+        super().__init__(b"")
         self.stream = shake_128(b"ACTv1-P256-SHA256 extended vectors L=%d" % L).digest(1 << 20)
 
 

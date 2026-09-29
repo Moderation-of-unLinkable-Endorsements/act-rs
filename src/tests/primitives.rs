@@ -270,20 +270,40 @@ fn derivations<B: Backend>() {
     for dst in [hash::DST_HASH_TO_GROUP, hash::DST_HASH_TO_SCALAR] {
         assert!(dst.ends_with(crate::PROTOCOL_CONTEXT));
     }
-    let seed = [1u8; 48];
-    let a = hash::derive_scalar::<B>(&seed, b"a").unwrap();
-    let b = hash::derive_scalar::<B>(&seed, b"b").unwrap();
-    assert_ne!(a.to_bytes(), b.to_bytes());
-    assert!(!bool::from(a.is_zero()));
+    let rand = [1u8; 3 * 48];
+    let a = hash::derive_scalars::<B>(&rand, b"a").unwrap();
+    let b = hash::derive_scalars::<B>(&rand, b"b").unwrap();
+    assert_eq!(a.len(), 3);
+    for (x, y) in a.iter().zip(b.iter()) {
+        assert_ne!(x.to_bytes(), y.to_bytes());
+        assert!(!bool::from(x.is_zero()));
+    }
+    // A change to any part of the input changes every derived scalar.
+    let mut changed = rand;
+    changed[3 * 48 - 1] ^= 1;
+    let c = hash::derive_scalars::<B>(&changed, b"a").unwrap();
+    for (x, y) in a.iter().zip(c.iter()) {
+        assert_ne!(x.to_bytes(), y.to_bytes());
+    }
+    for wrong in [&rand[..0], &rand[..47], &rand[..49]] {
+        assert_eq!(
+            hash::derive_scalars::<B>(wrong, b"a").unwrap_err(),
+            crate::Error::InvalidInput
+        );
+    }
     assert_eq!(
-        hash::derive_scalar::<B>(&seed, &[0u8; 65536]).unwrap_err(),
+        hash::derive_scalars::<B>(&rand[..48], &[0u8; 65536]).unwrap_err(),
         crate::Error::InvalidInput
     );
-    let nonce = hash::derive_nonce::<B>(b"secret", b"e", &[b"inst", b"ance"], &seed).unwrap();
-    let joined = hash::derive_nonce::<B>(b"secret", b"e", &[b"instance"], &seed).unwrap();
-    assert_eq!(nonce.to_bytes(), joined.to_bytes());
-    let other = hash::derive_nonce::<B>(b"secret", b"e", &[b"instance"], &[2u8; 48]).unwrap();
-    assert_ne!(nonce.to_bytes(), other.to_bytes());
+    let seed = [1u8; 48];
+    let nonce = hash::derive_nonces::<B>(b"secret", b"e", &[b"inst", b"ance"], &seed).unwrap();
+    let joined = hash::derive_nonces::<B>(b"secret", b"e", &[b"instance"], &seed).unwrap();
+    assert_eq!(nonce[0].to_bytes(), joined[0].to_bytes());
+    let other = hash::derive_nonces::<B>(b"secret", b"e", &[b"instance"], &[2u8; 48]).unwrap();
+    assert_ne!(nonce[0].to_bytes(), other[0].to_bytes());
+    let key = hash::derive_key_scalar::<B>(&seed, b"GenerateKeyPair").unwrap();
+    assert!(!bool::from(key.is_zero()));
+    assert_ne!(key.to_bytes(), a[0].to_bytes());
     // Little- and big-endian reductions agree with the scalar arithmetic.
     let mut bytes = [0u8; 48];
     bytes[47] = 5;

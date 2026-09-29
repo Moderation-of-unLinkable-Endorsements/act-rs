@@ -29,7 +29,7 @@ use crate::protocol::{
     issue_refund_with, issue_request_with, issue_response_with, prove_spend_with, verify_spend,
 };
 
-/// The draft's vectors, `L = 4`, at commit d00085f of the drafts repository.
+/// The draft's vectors, `L = 4`, at commit a7ba1c0 of the drafts repository.
 const DRAFT_L4: &str = include_str!("../../tests/vectors/draft-L4.txt");
 const EXTENDED: [(&str, &str); 5] = [
     ("L1", include_str!("../../tests/vectors/act-L1.txt")),
