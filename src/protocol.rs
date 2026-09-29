@@ -443,6 +443,7 @@ fn signing_exponent<B: Backend, R: Random>(
             &x_a_bytes,
         ],
         &*rand,
+        1,
     )?;
     let x = Zeroizing::new(derived[0] + key.sk);
     if bool::from(x.is_zero()) {
@@ -575,10 +576,10 @@ pub(crate) fn issue_request_with<B: Backend, R: Random>(
     rng: &mut R,
 ) -> Result<(ClientIssuanceState<B>, IssueRequestMessage<B>), Error> {
     let gens = &params.gens;
-    let mut rand = Zeroizing::new([0u8; 2 * NSEED]);
+    let mut rand = Zeroizing::new([0u8; NSEED]);
     rng.fill(&mut *rand);
     // `derived` holds `(k, r)` and is wiped on every return.
-    let derived = hash::derive_scalars::<B>(&*rand, b"IssueRequest")?;
+    let derived = hash::derive_scalars::<B>(&*rand, b"IssueRequest", 2)?;
     drop(rand);
 
     let k_commitment = fixed::<B, 2>([(&gens.h2, &derived[0]), (&gens.h3, &derived[1])]);
@@ -729,19 +730,18 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
     let tag = sigma::tag(b"Spend", &[ctx_spend])?;
     let session_id = sigma::session_id::<B>(&tag);
 
-    // One seed per scalar: four fixed ones, then L for the bits of the
-    // remainder or one for its commitment, then L for the bits of the
-    // topped-up balance.
-    let seeds = 4 + if s > 0 { l } else { 1 } + if a > 0 { l } else { 0 };
-    let mut rand = Zeroizing::new(alloc::vec![0u8; seeds * NSEED]);
-    rng.fill(&mut rand);
+    // Four fixed scalars, then L for the bits of the remainder or one for
+    // its commitment, then L for the bits of the topped-up balance.
+    let count = 4 + if s > 0 { l } else { 1 } + if a > 0 { l } else { 0 };
+    let mut rand = Zeroizing::new([0u8; NSEED]);
+    rng.fill(&mut *rand);
     // `derived` holds every secret scalar of the spend and is wiped on every
     // return; the values computed from them below are held in wrappers that
     // wipe them on drop.
-    let derived = hash::derive_scalars::<B>(&rand, b"ProveSpend")?;
+    let derived = hash::derive_scalars::<B>(&*rand, b"ProveSpend", count)?;
     drop(rand);
     let (r1, r2, kstar, rn) = (&derived[0], &derived[1], &derived[2], &derived[3]);
-    let mut next_seed = 4;
+    let mut next_scalar = 4;
 
     // Rerandomize the signature.
     let c_scalar = Zeroizing::new(B::Scalar::from(c));
@@ -787,21 +787,22 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
     let r_star;
     if s > 0 {
         let (commitments, blinding_sum) =
-            range_block::<B>(gens, l, v1, &derived[next_seed..], &mut witness)?;
+            range_block::<B>(gens, l, v1, &derived[next_scalar..], &mut witness)?;
         com1 = commitments;
         r_star = Zeroizing::new(*rn + *blinding_sum);
-        next_seed += l;
+        next_scalar += l;
     } else {
-        let rc = &derived[next_seed];
+        let rc = &derived[next_scalar];
         com_c = Some(fixed::<B, 2>([(&gens.h1, &*c_scalar), (&gens.h3, rc)]));
         r_star = Zeroizing::new(*rn + *rc);
         witness.push(*rc);
-        next_seed += 1;
+        next_scalar += 1;
     }
 
     // Commit to the topped-up balance when there is a top-up.
     if a > 0 {
-        let (commitments, _) = range_block::<B>(gens, l, v2, &derived[next_seed..], &mut witness)?;
+        let (commitments, _) =
+            range_block::<B>(gens, l, v2, &derived[next_scalar..], &mut witness)?;
         com2 = commitments;
     }
     debug_assert_eq!(witness.len(), witness_len);

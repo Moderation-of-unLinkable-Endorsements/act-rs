@@ -408,25 +408,24 @@ fn keys_round_trip<B: Backend>() {
 
 fn proofs_are_deterministic_in_the_randomness<B: Backend>() {
     let setup = new_setup::<B>(4);
-    let mut rng = Replay::constant(3, 4 * 48);
+    let mut rng = Replay::constant(3, 2 * 48);
     let (_, first) = issue_request_with(&setup.params, &mut rng).unwrap();
     rng.finish();
-    let mut rng = Replay::constant(3, 4 * 48);
+    let mut rng = Replay::constant(3, 2 * 48);
     let (_, second) = issue_request_with(&setup.params, &mut rng).unwrap();
     assert_eq!(first.to_bytes(), second.to_bytes());
-    let mut rng = Replay::constant(4, 4 * 48);
+    let mut rng = Replay::constant(4, 2 * 48);
     let (_, third) = issue_request_with(&setup.params, &mut rng).unwrap();
     assert_ne!(first.to_bytes(), third.to_bytes());
 
     let credential = issue(&setup, CTX, 5);
     let bytes = credential.to_bytes();
-    let n = 4 + 4 + (7 + 12);
-    let mut rng = Replay::constant(5, n * 48);
+    let mut rng = Replay::constant(5, 2 * 48);
     let (_, first) =
         prove_spend_with(&setup.params, credential, CTX, 2, 0, CHALLENGE, &mut rng).unwrap();
     rng.finish();
     let credential = Credential::from_bytes(&setup.params, &bytes).unwrap();
-    let mut rng = Replay::constant(5, n * 48);
+    let mut rng = Replay::constant(5, 2 * 48);
     let (_, second) =
         prove_spend_with(&setup.params, credential, CTX, 2, 0, CHALLENGE, &mut rng).unwrap();
     assert_eq!(first.to_bytes(), second.to_bytes());

@@ -251,14 +251,15 @@ fn prover_nonces<B: Backend, R: Random>(
         secret.extend_from_slice(&bytes);
         bytes.zeroize();
     }
-    let mut rand = Zeroizing::new(alloc::vec![0u8; witness.len() * NSEED]);
-    rng.fill(&mut rand);
+    let mut rand = Zeroizing::new([0u8; NSEED]);
+    rng.fill(rand.as_mut());
     // The instance is `session_id || I2OSP(len(relation), 4) || relation`.
     hash::derive_nonces::<B>(
         &secret,
         b"nonce",
         &[session_id, &relation_len.to_be_bytes(), relation],
-        &rand,
+        rand.as_ref(),
+        witness.len(),
     )
 }
 
