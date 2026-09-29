@@ -14,7 +14,7 @@ the balance and cannot link a spend to the issuance or refund that produced
 the Credential, nor two spends to each other.
 
 The implementation tracks the draft at commit
-[`a7ba1c0`](https://github.com/Moderation-of-unLinkable-Endorsements/internet-drafts/commit/a7ba1c0561b4465a2ebeac5719ffdd7b562db3e9)
+[`e4690fc`](https://github.com/Moderation-of-unLinkable-Endorsements/internet-drafts/commit/e4690fcbb192b39a94664268917b5335aaf89779)
 of the drafts repository, whose scalar derivation is that of
 draft-authors-mole-rollatini, and reproduces its test vectors byte for byte.
 

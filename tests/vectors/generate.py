@@ -16,7 +16,7 @@
 implementation, in the draft's `key = value` format.
 
 Run from the `poc/` directory of the internet-drafts repository at commit
-a7ba1c0561b4465a2ebeac5719ffdd7b562db3e9, with its virtual environment and
+e4690fcbb192b39a94664268917b5335aaf89779, with its virtual environment and
 the sigma-protocols submodule set up as its README describes:
 
     python generate.py L "s:a:t,s:a:t,..." [initial_balance] > act-L<L>.txt
