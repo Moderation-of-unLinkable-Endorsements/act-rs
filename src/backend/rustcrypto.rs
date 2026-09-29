@@ -92,8 +92,13 @@ impl super::Point for ProjectivePoint {
     }
 
     fn from_bytes(bytes: &[u8; POINT_LENGTH]) -> CtOption<Self> {
-        // `GroupEncoding::from_bytes` maps the all-zero string to the
-        // identity; the draft requires that it be rejected.
+        // Only compressed encodings are canonical. `GroupEncoding::from_bytes`
+        // also accepts the SEC1 compact tag 0x05, and maps the all-zero
+        // string to the identity, which the draft requires be rejected; the
+        // prefix check excludes both, and the identity is checked anyway.
+        if bytes[0] != 2 && bytes[0] != 3 {
+            return CtOption::new(Self::IDENTITY, Choice::from(0));
+        }
         <Self as GroupEncoding>::from_bytes(&CompressedPoint::from(*bytes))
             .and_then(|point| CtOption::new(point, !Group::is_identity(&point)))
     }

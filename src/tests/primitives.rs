@@ -220,9 +220,16 @@ fn point_arithmetic<B: Backend>() {
     let decoded = B::Point::from_bytes(&g.to_bytes().unwrap()).unwrap();
     assert_eq!(decoded, g);
     assert!(bool::from(B::Point::from_bytes(&[0; 33]).is_none()));
-    let mut uncompressed = g.to_bytes().unwrap();
-    uncompressed[0] = 4;
-    assert!(bool::from(B::Point::from_bytes(&uncompressed).is_none()));
+    // Only the compressed prefixes decode: not 0x04 (uncompressed), 0x05
+    // (the SEC1 compact tag), or any other.
+    for prefix in (0..=u8::MAX).filter(|prefix| *prefix != 2 && *prefix != 3) {
+        let mut other = g.to_bytes().unwrap();
+        other[0] = prefix;
+        assert!(
+            bool::from(B::Point::from_bytes(&other).is_none()),
+            "prefix {prefix:#04x}"
+        );
+    }
     let mut off_curve = g.to_bytes().unwrap();
     off_curve[32] ^= 1;
     // x + 1 may or may not be on the curve; only check that decoding is consistent.
