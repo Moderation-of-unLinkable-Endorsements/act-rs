@@ -85,13 +85,17 @@ impl<B: Backend> Statement<B> for Commitment<'_, B> {
         2
     }
 
+    fn num_equations(&self) -> usize {
+        1
+    }
+
     fn validate(&self) -> Result<(), Error> {
         nonidentity(self.k)
     }
 
     fn serialize(&self, out: &mut Vec<u8>) -> Result<(), Error> {
         let mut w = RelationWriter::new(out);
-        w.equations(1);
+        w.equations(self.num_equations());
         w.image(&[(3, &ONE)]);
         w.terms(&[(0, 1, &ONE), (1, 2, &ONE)]);
         w.element(self.gens.h2.point())?;
@@ -129,6 +133,10 @@ impl<B: Backend> Statement<B> for Signature<'_, B> {
         1
     }
 
+    fn num_equations(&self) -> usize {
+        2
+    }
+
     fn validate(&self) -> Result<(), Error> {
         nonidentity(self.a)?;
         nonidentity(self.x_a)?;
@@ -137,7 +145,7 @@ impl<B: Backend> Statement<B> for Signature<'_, B> {
 
     fn serialize(&self, out: &mut Vec<u8>) -> Result<(), Error> {
         let mut w = RelationWriter::new(out);
-        w.equations(2);
+        w.equations(self.num_equations());
         w.image(&[(2, &ONE)]);
         w.terms(&[(0, 1, &ONE)]);
         w.image(&[(3, &ONE)]);
@@ -412,6 +420,11 @@ impl<B: Backend> Statement<B> for Spend<'_, B> {
         FIXED_SCALARS + single + self.ranges().map(|r| 3 * r.len()).sum::<usize>()
     }
 
+    fn num_equations(&self) -> usize {
+        let single = matches!(self.remainder, Remainder::Single(_)) as usize;
+        3 + single + self.ranges().map(|r| 2 * r.len() + 1).sum::<usize>()
+    }
+
     fn validate(&self) -> Result<(), Error> {
         // Check 8: no statement element is the identity. The generators are
         // fixed and the commitments were deserialized; `A_bar` and
@@ -443,9 +456,7 @@ impl<B: Backend> Statement<B> for Spend<'_, B> {
 
     fn serialize(&self, out: &mut Vec<u8>) -> Result<(), Error> {
         let mut w = RelationWriter::new(out);
-        let single = matches!(self.remainder, Remainder::Single(_)) as usize;
-        let equations = 3 + single + self.ranges().map(|r| 2 * r.len() + 1).sum::<usize>();
-        w.equations(equations);
+        w.equations(self.num_equations());
 
         w.image(&[(EL_A_BAR, &ONE)]);
         w.terms(&[(E, EL_A_PRIME, &MINUS_ONE), (R2, EL_B_BAR, &ONE)]);

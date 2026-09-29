@@ -112,7 +112,9 @@ impl<H: Sha256> XmdPrefix<H> {
 fn scalar_from_u192<B: Backend>(bytes: &[u8]) -> B::Scalar {
     let mut padded = [0u8; SCALAR_LENGTH];
     padded[8..].copy_from_slice(bytes);
-    B::Scalar::from_bytes(&padded).unwrap_or(B::Scalar::default())
+    let scalar = B::Scalar::from_bytes(&padded).unwrap_or(B::Scalar::default());
+    padded.zeroize();
+    scalar
 }
 
 /// The scalar `2^192`.
@@ -126,7 +128,12 @@ fn two_to_192<B: Backend>() -> B::Scalar {
 /// as `hi * 2^192 + lo` over two canonical halves.
 pub(crate) fn reduce_be_48<B: Backend>(bytes: &[u8; XMD_LENGTH]) -> B::Scalar {
     let (hi, lo) = bytes.split_at(24);
-    scalar_from_u192::<B>(hi) * two_to_192::<B>() + scalar_from_u192::<B>(lo)
+    let mut hi = scalar_from_u192::<B>(hi);
+    let mut lo = scalar_from_u192::<B>(lo);
+    let scalar = hi * two_to_192::<B>() + lo;
+    hi.zeroize();
+    lo.zeroize();
+    scalar
 }
 
 /// Reduces a 48-byte little-endian integer modulo the order, as the
@@ -136,7 +143,9 @@ pub(crate) fn reduce_le_48<B: Backend>(bytes: &[u8; XMD_LENGTH]) -> B::Scalar {
     for (dst, src) in reversed.iter_mut().zip(bytes.iter().rev()) {
         *dst = *src;
     }
-    reduce_be_48::<B>(&reversed)
+    let scalar = reduce_be_48::<B>(&reversed);
+    reversed.zeroize();
+    scalar
 }
 
 /// `G.HashToScalar(msg)` under `dst`.

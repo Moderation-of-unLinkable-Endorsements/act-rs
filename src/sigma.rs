@@ -138,6 +138,9 @@ pub(crate) trait Statement<B: Backend> {
     /// `num_scalars(instance)`: the witness length.
     fn num_scalars(&self) -> usize;
 
+    /// The number of equations, and so of commitments.
+    fn num_equations(&self) -> usize;
+
     /// `ValidateInstance`, restricted to what does not hold by construction:
     /// the structural checks are fixed by the shape, and deserialization
     /// already rejects the identity, so this checks the computed elements,
@@ -167,7 +170,19 @@ impl<'a> RelationWriter<'a> {
 
     fn count(&mut self, value: usize) {
         // Shapes are bounded by `L <= 64`; the draft caps counts at 2^32.
-        self.out.extend_from_slice(&(value as u32).to_le_bytes());
+        self.put(&(value as u32).to_le_bytes());
+    }
+
+    /// Appends `bytes`. The relation can hold elements derived from secrets,
+    /// so growing the buffer wipes the one it replaces.
+    fn put(&mut self, bytes: &[u8]) {
+        if self.out.capacity() - self.out.len() < bytes.len() {
+            let capacity = core::cmp::max(2 * self.out.capacity(), self.out.len() + bytes.len());
+            let mut grown = Vec::with_capacity(capacity);
+            grown.extend_from_slice(self.out);
+            core::mem::replace(self.out, grown).zeroize();
+        }
+        self.out.extend_from_slice(bytes);
     }
 
     /// `LE(num_equations, 4)`.
@@ -200,20 +215,21 @@ impl<'a> RelationWriter<'a> {
     /// One image term.
     pub(crate) fn image_term(&mut self, element: usize, coeff: &[u8; SCALAR_LENGTH]) {
         self.count(element);
-        self.out.extend_from_slice(coeff);
+        self.put(coeff);
     }
 
     /// One right-hand-side term.
     pub(crate) fn term(&mut self, scalar: usize, element: usize, coeff: &[u8; SCALAR_LENGTH]) {
         self.count(scalar);
         self.count(element);
-        self.out.extend_from_slice(coeff);
+        self.put(coeff);
     }
 
     /// A statement element, at index 1 onwards; the generator is implicit.
     pub(crate) fn element<P: Point>(&mut self, point: &P) -> Result<(), Error> {
-        let bytes = point.to_bytes().ok_or(Error::Verify)?;
-        self.out.extend_from_slice(&bytes);
+        let mut bytes = point.to_bytes().ok_or(Error::Verify)?;
+        self.put(&bytes);
+        bytes.zeroize();
         Ok(())
     }
 }
@@ -228,22 +244,48 @@ fn prover_nonces<B: Backend, R: Random>(
     rng: &mut R,
 ) -> Result<Zeroizing<Vec<B::Scalar>>, Error> {
     let relation_len = u32::try_from(relation.len()).map_err(|_| Error::InvalidInput)?;
-    let mut secret = Vec::with_capacity(witness.len() * SCALAR_LENGTH);
+    // Allocated at full size, so that no reallocation frees secret bytes.
+    let mut secret = Zeroizing::new(Vec::with_capacity(witness.len() * SCALAR_LENGTH));
     for scalar in witness {
-        secret.extend_from_slice(&scalar.to_bytes());
+        let mut bytes = scalar.to_bytes();
+        secret.extend_from_slice(&bytes);
+        bytes.zeroize();
     }
-    let mut rand = alloc::vec![0u8; witness.len() * NSEED];
+    let mut rand = Zeroizing::new(alloc::vec![0u8; witness.len() * NSEED]);
     rng.fill(&mut rand);
     // The instance is `session_id || I2OSP(len(relation), 4) || relation`.
-    let nonces = hash::derive_nonces::<B>(
+    hash::derive_nonces::<B>(
         &secret,
         b"nonce",
         &[session_id, &relation_len.to_be_bytes(), relation],
         &rand,
-    );
-    secret.zeroize();
-    rand.zeroize();
-    nonces
+    )
+}
+
+/// The commitments of a proof, wiped when dropped: with the challenge and
+/// the responses they determine the image, which can derive from secrets.
+/// The buffer is allocated for all of them, so it never reallocates.
+struct Commitments<P: Point>(Vec<P>);
+
+impl<P: Point> Commitments<P> {
+    /// The concatenated encodings, or `identity` if one has none.
+    fn encode(&self, identity: Error) -> Result<Zeroizing<Vec<u8>>, Error> {
+        let mut out = Zeroizing::new(Vec::with_capacity(self.0.len() * POINT_LENGTH));
+        for point in &self.0 {
+            let mut bytes = point.to_bytes().ok_or(identity)?;
+            out.extend_from_slice(&bytes);
+            bytes.zeroize();
+        }
+        Ok(out)
+    }
+}
+
+impl<P: Point> Drop for Commitments<P> {
+    fn drop(&mut self) {
+        for point in &mut self.0 {
+            point.zeroize();
+        }
+    }
 }
 
 /// `ProveCompact` for `statement` under `session_id`.
@@ -257,19 +299,17 @@ pub(crate) fn prove<B: Backend, S: Statement<B>, R: Random>(
     let n = statement.num_scalars();
     debug_assert_eq!(witness.len(), n);
 
-    let mut relation = Vec::new();
+    let mut relation = Zeroizing::new(Vec::new());
     statement.serialize(&mut relation)?;
 
     let mut nonces = prover_nonces::<B, _>(witness, session_id, &relation, rng)?;
 
-    let mut commitments = Vec::new();
-    statement.commit(&nonces, &mut commitments);
-    let mut commitment_bytes = Vec::with_capacity(commitments.len() * POINT_LENGTH);
-    for commitment in &commitments {
-        // A commitment equal to the identity has no encoding; the
-        // probability is negligible for a valid instance.
-        commitment_bytes.extend_from_slice(&commitment.to_bytes().ok_or(Error::Derive)?);
-    }
+    let mut commitments = Commitments(Vec::with_capacity(statement.num_equations()));
+    statement.commit(&nonces, &mut commitments.0);
+    debug_assert_eq!(commitments.0.len(), statement.num_equations());
+    // A commitment equal to the identity has no encoding; the probability is
+    // negligible for a valid instance.
+    let commitment_bytes = commitments.encode(Error::Derive)?;
 
     let challenge = challenge::<B>(session_id, &relation, &commitment_bytes);
     let mut proof = Vec::with_capacity((n + 1) * SCALAR_LENGTH);
@@ -303,16 +343,14 @@ pub(crate) fn verify<B: Backend, S: Statement<B>>(
         .collect::<Result<_, _>>()?;
     let (claimed, response) = scalars.split_first().ok_or(Error::Verify)?;
 
-    let mut relation = Vec::new();
+    let mut relation = Zeroizing::new(Vec::new());
     statement.serialize(&mut relation)?;
 
-    let mut commitments = Vec::new();
-    statement.simulate(claimed, response, &mut commitments);
-    let mut commitment_bytes = Vec::with_capacity(commitments.len() * POINT_LENGTH);
-    for commitment in &commitments {
-        // Step 7: a simulated commitment equal to the identity is rejected.
-        commitment_bytes.extend_from_slice(&commitment.to_bytes().ok_or(Error::Verify)?);
-    }
+    let mut commitments = Commitments(Vec::with_capacity(statement.num_equations()));
+    statement.simulate(claimed, response, &mut commitments.0);
+    debug_assert_eq!(commitments.0.len(), statement.num_equations());
+    // Step 7: a simulated commitment equal to the identity is rejected.
+    let commitment_bytes = commitments.encode(Error::Verify)?;
 
     let expected = challenge::<B>(session_id, &relation, &commitment_bytes);
     if bool::from(claimed.ct_eq(&expected)) {

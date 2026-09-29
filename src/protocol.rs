@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use subtle::{Choice, ConditionallySelectable};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::backend::{Backend, FixedBase, POINT_LENGTH, Point, SCALAR_LENGTH, Scalar};
 use crate::hash::{self, NSEED};
@@ -347,6 +347,23 @@ impl<B: Backend> RefundMessage<B> {
     }
 }
 
+/// A point derived from secrets, zeroized when dropped.
+struct SecretPoint<P: Point>(P);
+
+impl<P: Point> core::ops::Deref for SecretPoint<P> {
+    type Target = P;
+
+    fn deref(&self) -> &P {
+        &self.0
+    }
+}
+
+impl<P: Point> Drop for SecretPoint<P> {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 /// A record that holds secrets: zeroized on drop and redacted in `Debug`.
 macro_rules! secret_record {
     ($type:ident { $($scalar:ident),* ; $($point:ident),* ; $($plain:ident),* }) => {
@@ -410,14 +427,14 @@ fn signing_exponent<B: Backend, R: Random>(
     label: &[u8],
     x_a: &B::Point,
     rng: &mut R,
-) -> Result<(B::Scalar, B::Scalar), Error> {
+) -> Result<(B::Scalar, Zeroizing<B::Scalar>), Error> {
     let x_a_bytes = x_a.to_bytes().ok_or(Error::Verify)?;
     let label_len = u16::try_from(label.len()).map_err(|_| Error::InvalidInput)?;
-    let mut rand = [0u8; NSEED];
-    rng.fill(&mut rand);
-    let mut sk_bytes = key.sk.to_bytes();
-    let e = hash::derive_nonces::<B>(
-        &sk_bytes,
+    let mut rand = Zeroizing::new([0u8; NSEED]);
+    rng.fill(&mut *rand);
+    let sk_bytes = Zeroizing::new(key.sk.to_bytes());
+    let derived = hash::derive_nonces::<B>(
+        &*sk_bytes,
         b"e",
         &[
             &label_len.to_be_bytes(),
@@ -425,16 +442,14 @@ fn signing_exponent<B: Backend, R: Random>(
             &(POINT_LENGTH as u16).to_be_bytes(),
             &x_a_bytes,
         ],
-        &rand,
-    );
-    sk_bytes.zeroize();
-    rand.zeroize();
-    let e = e?[0];
-    let x = e + key.sk;
+        &*rand,
+    )?;
+    let x = Zeroizing::new(derived[0] + key.sk);
     if bool::from(x.is_zero()) {
+        // Here `e` is `-skM`; `derived` is wiped on return.
         return Err(Error::Derive);
     }
-    Ok((e, x))
+    Ok((derived[0], x))
 }
 
 /// A signature `(A, e)` with its `Signature` proof.
@@ -452,19 +467,18 @@ fn sign<B: Backend, R: Random>(
     x_a: &B::Point,
     rng: &mut R,
 ) -> Result<SignedMessage<B>, Error> {
-    let (e, mut x) = signing_exponent(key, label, x_a, rng)?;
-    let mut x_inv = hash::require(x.invert(), Error::Derive)?;
+    let (e, x) = signing_exponent(key, label, x_a, rng)?;
+    let x_inv = Zeroizing::new(hash::require(x.invert(), Error::Derive)?);
     let a = x_a.mul(&x_inv);
-    x_inv.zeroize();
+    drop(x_inv);
     let x_g = B::Point::mul_generator(&x);
     let statement = Signature {
         a: &a,
         x_a,
         x_g: &x_g,
     };
-    let pok = sigma::prove::<B, _, _>(session_id, &statement, &[x], rng);
-    x.zeroize();
-    Ok((a, e, proof_array(pok?)?))
+    let pok = sigma::prove::<B, _, _>(session_id, &statement, core::slice::from_ref(&*x), rng)?;
+    Ok((a, e, proof_array(pok)?))
 }
 
 /// Verifies the `Signature` proof of `(a, e)` on `x_a` under `pk`.
@@ -503,37 +517,45 @@ pub(crate) fn point_bytes<P: Point>(point: &P) -> [u8; POINT_LENGTH] {
     point.to_bytes().unwrap_or([0; POINT_LENGTH])
 }
 
+/// A range block's bit commitments and its blinding sum.
+type RangeBlock<B> = (
+    Vec<<B as Backend>::Point>,
+    Zeroizing<<B as Backend>::Scalar>,
+);
+
 /// A range block over `value` with blindings `s`: the bit commitments
 /// `Com[j] = b[j] * H1 + s[j] * H3`, with the bits, blindings, and products
 /// `u[j] = (1 - b[j]) * s[j]` appended to `witness` in that order. Returns the
 /// commitments and `sum_j 2^j * s[j]`, the block's contribution to the
 /// blinding factor of the refunded Credential. Constant time in `value`.
+///
+/// `witness` must have room for `3 * l` more scalars, so that extending it
+/// never reallocates.
 fn range_block<B: Backend>(
     gens: &Generators<B>,
     l: usize,
     value: u64,
     s: &[B::Scalar],
     witness: &mut Vec<B::Scalar>,
-) -> Result<(Vec<B::Point>, B::Scalar), Error> {
+) -> Result<RangeBlock<B>, Error> {
     let one = B::Scalar::from(1);
-    let mut bits = bits::<B>(value, l);
-    let mut blindings = s.get(..l).ok_or(Error::InvalidInput)?.to_vec();
+    let blindings = s.get(..l).ok_or(Error::InvalidInput)?;
+    let bits = Zeroizing::new(bits::<B>(value, l));
     let mut commitments = Vec::with_capacity(l);
-    for (bit, blinding) in bits.iter().zip(&blindings) {
+    for (bit, blinding) in bits.iter().zip(blindings) {
         commitments.push(fixed::<B, 2>([(&gens.h1, bit), (&gens.h3, blinding)]));
     }
-    let mut products: Vec<B::Scalar> = bits
-        .iter()
-        .zip(&blindings)
-        .map(|(b, s)| (one - *b) * *s)
-        .collect();
-    let blinding_sum = horner_scalars(&blindings);
+    let products: Zeroizing<Vec<B::Scalar>> = Zeroizing::new(
+        bits.iter()
+            .zip(blindings)
+            .map(|(b, s)| (one - *b) * *s)
+            .collect(),
+    );
+    let blinding_sum = Zeroizing::new(horner_scalars(blindings));
+    debug_assert!(witness.capacity() - witness.len() >= 3 * l);
     witness.extend_from_slice(&bits);
-    witness.extend_from_slice(&blindings);
+    witness.extend_from_slice(blindings);
     witness.extend_from_slice(&products);
-    bits.zeroize();
-    blindings.zeroize();
-    products.zeroize();
     Ok((commitments, blinding_sum))
 }
 
@@ -553,25 +575,23 @@ pub(crate) fn issue_request_with<B: Backend, R: Random>(
     rng: &mut R,
 ) -> Result<(ClientIssuanceState<B>, IssueRequestMessage<B>), Error> {
     let gens = &params.gens;
-    let mut rand = [0u8; 2 * NSEED];
-    rng.fill(&mut rand);
-    let derived = hash::derive_scalars::<B>(&rand, b"IssueRequest");
-    rand.zeroize();
-    let mut derived = derived?;
-    let (k, r) = (derived[0], derived[1]);
-    derived.zeroize();
+    let mut rand = Zeroizing::new([0u8; 2 * NSEED]);
+    rng.fill(&mut *rand);
+    // `derived` holds `(k, r)` and is wiped on every return.
+    let derived = hash::derive_scalars::<B>(&*rand, b"IssueRequest")?;
+    drop(rand);
 
-    let k_commitment = fixed::<B, 2>([(&gens.h2, &k), (&gens.h3, &r)]);
+    let k_commitment = fixed::<B, 2>([(&gens.h2, &derived[0]), (&gens.h3, &derived[1])]);
     let statement = Commitment {
         gens,
         k: &k_commitment,
     };
-    let pok = sigma::prove::<B, _, _>(&params.sid_issue_request, &statement, &[k, r], rng)?;
+    let pok = sigma::prove::<B, _, _>(&params.sid_issue_request, &statement, &derived, rng)?;
 
     Ok((
         ClientIssuanceState {
-            k,
-            r,
+            k: derived[0],
+            r: derived[1],
             k_commitment: k_commitment.clone(),
         },
         IssueRequestMessage {
@@ -713,33 +733,51 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
     // remainder or one for its commitment, then L for the bits of the
     // topped-up balance.
     let seeds = 4 + if s > 0 { l } else { 1 } + if a > 0 { l } else { 0 };
-    let mut rand = alloc::vec![0u8; seeds * NSEED];
+    let mut rand = Zeroizing::new(alloc::vec![0u8; seeds * NSEED]);
     rng.fill(&mut rand);
-    let derived = hash::derive_scalars::<B>(&rand, b"ProveSpend");
-    rand.zeroize();
-    let mut derived = derived?;
-    let (mut r1, mut r2, kstar, mut rn) = (derived[0], derived[1], derived[2], derived[3]);
+    // `derived` holds every secret scalar of the spend and is wiped on every
+    // return; the values computed from them below are held in wrappers that
+    // wipe them on drop.
+    let derived = hash::derive_scalars::<B>(&rand, b"ProveSpend")?;
+    drop(rand);
+    let (r1, r2, kstar, rn) = (&derived[0], &derived[1], &derived[2], &derived[3]);
     let mut next_seed = 4;
 
     // Rerandomize the signature.
-    let mut c_scalar = B::Scalar::from(c);
-    let mut b_msg = fixed::<B, 4>([
-        (&gens.h1, &c_scalar),
-        (&gens.h2, &credential.k),
-        (&gens.h3, &credential.r),
-        (&gens.h4, &ctx),
-    ])
-    .add(&gens.g);
-    let a_prime = credential.a.mul(&(r1 * r2));
-    let b_bar = b_msg.mul(&r1);
-    let mut r3 = hash::require(r1.invert(), Error::Derive)?;
-    let mut a_bar = B::Point::lincomb([(&b_bar, &r2), (&a_prime, &-credential.e)]);
+    let c_scalar = Zeroizing::new(B::Scalar::from(c));
+    let b_msg = SecretPoint(
+        fixed::<B, 4>([
+            (&gens.h1, &*c_scalar),
+            (&gens.h2, &credential.k),
+            (&gens.h3, &credential.r),
+            (&gens.h4, &ctx),
+        ])
+        .add(&gens.g),
+    );
+    let r1r2 = Zeroizing::new(*r1 * *r2);
+    let a_prime = credential.a.mul(&r1r2);
+    let b_bar = b_msg.mul(r1);
+    let r3 = Zeroizing::new(hash::require(r1.invert(), Error::Derive)?);
+    let neg_e = Zeroizing::new(-credential.e);
+    let a_bar = SecretPoint(B::Point::lincomb([(&b_bar, r2), (&a_prime, &*neg_e)]));
 
     // Commit to the next Credential's nullifier.
-    let k_n = fixed::<B, 2>([(&gens.h2, &kstar), (&gens.h3, &rn)]);
+    let k_n = fixed::<B, 2>([(&gens.h2, kstar), (&gens.h3, rn)]);
 
-    let mut witness: Vec<B::Scalar> =
-        alloc::vec![credential.e, r2, r3, c_scalar, credential.r, kstar, rn];
+    // Allocated at full size, so that no reallocation frees secret scalars.
+    let witness_len = 7 + if s > 0 { 3 * l } else { 1 } + if a > 0 { 3 * l } else { 0 };
+    let mut witness: Zeroizing<Vec<B::Scalar>> = Zeroizing::new(Vec::with_capacity(witness_len));
+    for scalar in [
+        &credential.e,
+        r2,
+        &*r3,
+        &*c_scalar,
+        &credential.r,
+        kstar,
+        rn,
+    ] {
+        witness.push(*scalar);
+    }
     let mut com1 = Vec::new();
     let mut com_c = None;
     let mut com2 = Vec::new();
@@ -751,14 +789,13 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
         let (commitments, blinding_sum) =
             range_block::<B>(gens, l, v1, &derived[next_seed..], &mut witness)?;
         com1 = commitments;
-        r_star = rn + blinding_sum;
+        r_star = Zeroizing::new(*rn + *blinding_sum);
         next_seed += l;
     } else {
-        let mut rc = derived[next_seed];
-        com_c = Some(fixed::<B, 2>([(&gens.h1, &c_scalar), (&gens.h3, &rc)]));
-        r_star = rn + rc;
-        witness.push(rc);
-        rc.zeroize();
+        let rc = &derived[next_seed];
+        com_c = Some(fixed::<B, 2>([(&gens.h1, &*c_scalar), (&gens.h3, rc)]));
+        r_star = Zeroizing::new(*rn + *rc);
+        witness.push(*rc);
         next_seed += 1;
     }
 
@@ -767,7 +804,7 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
         let (commitments, _) = range_block::<B>(gens, l, v2, &derived[next_seed..], &mut witness)?;
         com2 = commitments;
     }
-    derived.zeroize();
+    debug_assert_eq!(witness.len(), witness_len);
 
     let h1_prime = fixed::<B, 2>([(&gens.h2, &credential.k), (&gens.h4, &ctx)]).add(&gens.g);
     let statement = Spend::new(
@@ -784,28 +821,20 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
         com_c.as_ref(),
         &com2,
     )?;
-    let pok = sigma::prove::<B, _, _>(&session_id, &statement, &witness, rng);
-    // Everything derived from the balance or the blinding factors, beyond
-    // what the state and the message carry, is cleared before returning.
-    witness.zeroize();
-    b_msg.zeroize();
-    a_bar.zeroize();
-    for scalar in [&mut r1, &mut r2, &mut r3, &mut c_scalar, &mut rn] {
-        scalar.zeroize();
-    }
-    let pok = pok?;
+    let pok = sigma::prove::<B, _, _>(&session_id, &statement, &witness, rng)?;
 
     // The commitment the refund will sign, opened by the new Credential's
     // secrets; the Moderator recomputes it from the message.
+    let v1_scalar = Zeroizing::new(B::Scalar::from(v1));
     let k_prime = fixed::<B, 3>([
-        (&gens.h1, &B::Scalar::from(v1)),
-        (&gens.h2, &kstar),
-        (&gens.h3, &r_star),
+        (&gens.h1, &*v1_scalar),
+        (&gens.h2, kstar),
+        (&gens.h3, &*r_star),
     ]);
 
     let state = ClientSpendState {
-        kstar,
-        r_star,
+        kstar: *kstar,
+        r_star: *r_star,
         v1,
         s,
         a,
@@ -842,15 +871,13 @@ pub fn verify_spend<B: Backend>(
     params.check_amount(spend.s)?;
     params.check_amount(spend.a)?;
     let ctx = context_scalar::<B>(ctx_cred)?;
-    let mut a_bar = spend.a_prime.mul(&key.sk);
-    let h1_prime = fixed::<B, 2>([(&gens.h2, &spend.k), (&gens.h4, &ctx)]).add(&gens.g);
     let tag = sigma::tag(b"Spend", &[ctx_spend])?;
-    let result = spend_statement(params, spend, &a_bar, &h1_prime).and_then(|statement| {
-        sigma::verify::<B, _>(&sigma::session_id::<B>(&tag), &statement, &spend.pok)
-    });
     // `A_bar` is a function of the signing key; it does not outlive the check.
-    a_bar.zeroize();
-    result
+    let a_bar = SecretPoint(spend.a_prime.mul(&key.sk));
+    let h1_prime = fixed::<B, 2>([(&gens.h2, &spend.k), (&gens.h4, &ctx)]).add(&gens.g);
+    spend_statement(params, spend, &a_bar, &h1_prime).and_then(|statement| {
+        sigma::verify::<B, _>(&sigma::session_id::<B>(&tag), &statement, &spend.pok)
+    })
 }
 
 fn spend_statement<'a, B: Backend>(
