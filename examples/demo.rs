@@ -52,9 +52,9 @@ fn main() -> Result<(), act::Error> {
         let encoded = spend.to_bytes();
         let spend = SpendMessage::from_bytes(&params, &encoded)?;
 
-        verify_spend(&params, &key, ctx_cred, ctx_spend.as_bytes(), &spend)?;
-        assert!(seen.insert(spend.nullifier()), "nullifier reused");
-        let refund = issue_refund(&params, &key, ctx_cred, &spend, t)?;
+        let verified = verify_spend(&params, &key, ctx_cred, ctx_spend.as_bytes(), &spend)?;
+        assert!(seen.insert(verified.nullifier()), "nullifier reused");
+        let refund = issue_refund(verified, t)?;
 
         let refund = RefundMessage::from_bytes(&params, &refund.to_bytes())?;
         credential = finalize_refund(&params, &public_key, ctx_cred, state, &refund)?;

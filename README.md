@@ -37,9 +37,10 @@ let credential = act::finalize_issue(&params, &public_key, ctx_cred, state, &res
 // Spending 30 credits with no top-up allowance; the Moderator returns 5.
 let ctx_spend = b"challenge-digest";
 let (state, spend) = act::prove_spend(&params, credential, ctx_cred, 30, 0, ctx_spend)?;
-act::verify_spend(&params, &secret_key, ctx_cred, ctx_spend, &spend)?;
-// record spend.nullifier() atomically with verification and the refund
-let refund = act::issue_refund(&params, &secret_key, ctx_cred, &spend, 5)?;
+let verified = act::verify_spend(&params, &secret_key, ctx_cred, ctx_spend, &spend)?;
+// Grant verified.allowance(), then atomically record verified.nullifier()
+// together with the refund.
+let refund = act::issue_refund(verified, 5)?;
 let credential = act::finalize_refund(&params, &public_key, ctx_cred, state, &refund)?;
 assert_eq!(credential.balance(), 75);
 # Ok::<(), act::Error>(())
@@ -158,8 +159,11 @@ named alongside.
 * Decoding rejects non-canonical scalars and points, the identity element,
   amounts at or above `2^L`, and spend messages whose shape does not match
   their amounts.
-* The Moderator must reject a repeated nullifier and record it atomically
-  with verification and the refund; the crate exposes the nullifier and
+* `verify_spend` returns an opaque, non-cloneable `VerifiedSpend` bound to the
+  exact message, key, configuration, and contexts it checked. `issue_refund`
+  only accepts this value, so it cannot sign a raw, unverified spend.
+* The Moderator must grant the verified allowance, reject a repeated
+  nullifier, and record the nullifier atomically with the refund; the crate
   leaves the store to the deployment.
 
 ## Performance

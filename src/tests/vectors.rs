@@ -156,11 +156,11 @@ fn replay<B: Backend>(text: &str) {
         assert_eq!(encoded.len(), SpendMessage::<B>::encoded_len(&params, s, a));
         let spend = SpendMessage::from_bytes(&params, &encoded).unwrap();
         assert_eq!((spend.amount(), spend.allowance()), (s, a));
-        verify_spend(&params, &key, &ctx_cred, &ctx_spend, &spend).unwrap();
+        let verified = verify_spend(&params, &key, &ctx_cred, &ctx_spend, &spend).unwrap();
 
         let t = v.int(&alloc::format!("{key_prefix}.refund.t"));
         let mut rng = Replay::new(&v.hex(&alloc::format!("{key_prefix}.refund.rand")));
-        let refund = issue_refund_with(&params, &key, &ctx_cred, &spend, t, &mut rng).unwrap();
+        let refund = issue_refund_with(verified, t, &mut rng).unwrap();
         rng.finish();
         let encoded = refund.to_bytes();
         assert_eq!(

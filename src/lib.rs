@@ -53,9 +53,10 @@
 //! // with no top-up allowance; the Moderator returns 5 credits.
 //! let ctx_spend = b"challenge-digest";
 //! let (state, spend) = act::prove_spend(&params, credential, ctx_cred, 30, 0, ctx_spend)?;
-//! act::verify_spend(&params, &secret_key, ctx_cred, ctx_spend, &spend)?;
-//! // ... the Moderator records `spend.nullifier()` atomically here ...
-//! let refund = act::issue_refund(&params, &secret_key, ctx_cred, &spend, 5)?;
+//! let verified = act::verify_spend(&params, &secret_key, ctx_cred, ctx_spend, &spend)?;
+//! // ... the Moderator grants `verified.allowance()` and atomically records
+//! // `verified.nullifier()` together with the refund ...
+//! let refund = act::issue_refund(verified, 5)?;
 //! let credential = act::finalize_refund(&params, &public_key, ctx_cred, state, &refund)?;
 //! assert_eq!(credential.balance(), 75);
 //! # Ok::<(), act::Error>(())
@@ -77,8 +78,9 @@
 //! * `prove_spend` consumes the Credential and `finalize_issue` and
 //!   `finalize_refund` consume their state, so a value cannot be used twice
 //!   within a process. Persisted copies are the wallet's responsibility.
-//! * The Moderator must reject a repeated nullifier ([`SpendMessage::nullifier`])
-//!   and record it atomically with verification and the refund.
+//! * [`verify_spend`] returns a [`VerifiedSpend`] that is bound to the exact
+//!   message, key, configuration, and contexts it checked. The Moderator must
+//!   reject a repeated nullifier and record it atomically with the refund.
 //! * Operations on the Client's balance and blinding factors, and on the
 //!   Moderator's signing key, are constant time with respect to those values.
 //!   The exception is point addition in the BoringSSL backend, which branches
@@ -125,8 +127,8 @@ use core::fmt;
 pub use backend::Backend;
 pub use protocol::{
     ClientIssuanceState, ClientSpendState, Credential, IssueRequestMessage, IssueResponseMessage,
-    Params, PublicKey, RefundMessage, SecretKey, SpendMessage, finalize_issue, finalize_refund,
-    issue_refund, issue_request, issue_response, prove_spend, verify_spend,
+    Params, PublicKey, RefundMessage, SecretKey, SpendMessage, VerifiedSpend, finalize_issue,
+    finalize_refund, issue_refund, issue_request, issue_response, prove_spend, verify_spend,
 };
 
 /// The backend selected by the enabled Cargo features.

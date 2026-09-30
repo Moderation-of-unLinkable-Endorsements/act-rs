@@ -402,8 +402,8 @@ mod parity {
         let credential = crate::finalize_issue(&bssl, &pk_bssl, b"ctx", state, &response).unwrap();
         let (state, spend) = crate::prove_spend(&bssl, credential, b"ctx", 5, 3, b"chal").unwrap();
         let spend = crate::SpendMessage::<RustCrypto>::from_bytes(&rc, &spend.to_bytes()).unwrap();
-        crate::verify_spend(&rc, &key_rc, b"ctx", b"chal", &spend).unwrap();
-        let refund = crate::issue_refund(&rc, &key_rc, b"ctx", &spend, 8).unwrap();
+        let verified = crate::verify_spend(&rc, &key_rc, b"ctx", b"chal", &spend).unwrap();
+        let refund = crate::issue_refund(verified, 8).unwrap();
         let refund =
             crate::RefundMessage::<BoringSsl>::from_bytes(&bssl, &refund.to_bytes()).unwrap();
         let credential = crate::finalize_refund(&bssl, &pk_bssl, b"ctx", state, &refund).unwrap();
@@ -415,8 +415,8 @@ mod parity {
             crate::prove_spend(&rc, credential, b"ctx", 43, 0, b"chal2").unwrap()
         };
         let spend = crate::SpendMessage::<BoringSsl>::from_bytes(&bssl, &spend.to_bytes()).unwrap();
-        crate::verify_spend(&bssl, &key_bssl, b"ctx", b"chal2", &spend).unwrap();
-        let refund = crate::issue_refund(&bssl, &key_bssl, b"ctx", &spend, 0).unwrap();
+        let verified = crate::verify_spend(&bssl, &key_bssl, b"ctx", b"chal2", &spend).unwrap();
+        let refund = crate::issue_refund(verified, 0).unwrap();
         let refund =
             crate::RefundMessage::<RustCrypto>::from_bytes(&rc, &refund.to_bytes()).unwrap();
         let credential =

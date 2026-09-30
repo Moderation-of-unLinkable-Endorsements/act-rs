@@ -76,8 +76,8 @@ fn spend<B: Backend>(
 ) -> (Credential<B>, SpendMessage<B>) {
     let (state, message) = prove_spend(&setup.params, credential, CTX, s, a, CHALLENGE).unwrap();
     let message = SpendMessage::from_bytes(&setup.params, &message.to_bytes()).unwrap();
-    verify_spend(&setup.params, &setup.key, CTX, CHALLENGE, &message).unwrap();
-    let refund = issue_refund(&setup.params, &setup.key, CTX, &message, t).unwrap();
+    let verified = verify_spend(&setup.params, &setup.key, CTX, CHALLENGE, &message).unwrap();
+    let refund = issue_refund(verified, t).unwrap();
     let refund = RefundMessage::from_bytes(&setup.params, &refund.to_bytes()).unwrap();
     let credential =
         finalize_refund(&setup.params, &setup.public_key, CTX, state, &refund).unwrap();
@@ -127,8 +127,8 @@ fn contexts_are_bound<B: Backend>() {
         verify_spend(&setup.params, &setup.key, CTX, b"other", &message).unwrap_err(),
         Error::Verify
     );
-    verify_spend(&setup.params, &setup.key, CTX, CHALLENGE, &message).unwrap();
-    let refund = issue_refund(&setup.params, &setup.key, CTX, &message, 1).unwrap();
+    let verified = verify_spend(&setup.params, &setup.key, CTX, CHALLENGE, &message).unwrap();
+    let refund = issue_refund(verified, 1).unwrap();
     assert_eq!(
         finalize_refund(&setup.params, &setup.public_key, b"other", state, &refund).unwrap_err(),
         Error::Verify
@@ -148,14 +148,30 @@ fn refunds_are_bound_to_their_spend<B: Backend>() {
     let second = issue(&setup, CTX, 5);
     let (state1, spend1) = prove_spend(&setup.params, first, CTX, 1, 0, CHALLENGE).unwrap();
     let (state2, spend2) = prove_spend(&setup.params, second, CTX, 1, 0, CHALLENGE).unwrap();
-    let refund1 = issue_refund(&setup.params, &setup.key, CTX, &spend1, 1).unwrap();
-    let refund2 = issue_refund(&setup.params, &setup.key, CTX, &spend2, 1).unwrap();
+    let verified1 = verify_spend(&setup.params, &setup.key, CTX, CHALLENGE, &spend1).unwrap();
+    let verified2 = verify_spend(&setup.params, &setup.key, CTX, CHALLENGE, &spend2).unwrap();
+    let refund1 = issue_refund(verified1, 1).unwrap();
+    let refund2 = issue_refund(verified2, 1).unwrap();
     assert_eq!(
         finalize_refund(&setup.params, &setup.public_key, CTX, state1, &refund2).unwrap_err(),
         Error::Verify
     );
     finalize_refund(&setup.params, &setup.public_key, CTX, state2, &refund2).unwrap();
     let _ = refund1;
+}
+
+fn unverified_spend_cannot_authorize_refund<B: Backend>() {
+    let setup = new_setup::<B>(8);
+    let credential = issue(&setup, CTX, 200);
+    let (_, mut spend) = prove_spend(&setup.params, credential, CTX, 0, 0, CHALLENGE).unwrap();
+    spend.pok.fill(0);
+
+    // There is no public refund-signing path from `spend` itself: the only
+    // accepted input is the token that this failed verification cannot return.
+    assert_eq!(
+        verify_spend(&setup.params, &setup.key, CTX, CHALLENGE, &spend).unwrap_err(),
+        Error::Verify
+    );
 }
 
 fn amounts_are_bounded<B: Backend>() {
@@ -184,11 +200,10 @@ fn amounts_are_bounded<B: Backend>() {
         credential = Credential::from_bytes(&setup.params, &bytes).unwrap();
     }
     let (state, message) = prove_spend(&setup.params, credential, CTX, 5, 0, CHALLENGE).unwrap();
-    assert_eq!(
-        issue_refund(&setup.params, &setup.key, CTX, &message, 6).unwrap_err(),
-        Error::Amount
-    );
-    let refund = issue_refund(&setup.params, &setup.key, CTX, &message, 5).unwrap();
+    let verified = verify_spend(&setup.params, &setup.key, CTX, CHALLENGE, &message).unwrap();
+    assert_eq!(issue_refund(verified, 6).unwrap_err(), Error::Amount);
+    let verified = verify_spend(&setup.params, &setup.key, CTX, CHALLENGE, &message).unwrap();
+    let refund = issue_refund(verified, 5).unwrap();
     // A refund below 2^L but above what the state admits.
     let state_bytes = state.to_bytes();
     let bad_state = {
@@ -268,8 +283,9 @@ fn tampering_is_rejected<B: Backend>() {
     for i in (0..message_bytes.len()).step_by(11) {
         let mut bytes = message_bytes.clone();
         bytes[i] ^= 1;
-        let result = SpendMessage::from_bytes(&setup.params, &bytes)
-            .and_then(|message| verify_spend(&setup.params, &setup.key, CTX, CHALLENGE, &message));
+        let result = SpendMessage::from_bytes(&setup.params, &bytes).and_then(|message| {
+            verify_spend(&setup.params, &setup.key, CTX, CHALLENGE, &message).map(|_| ())
+        });
         assert!(
             matches!(
                 result,
@@ -278,7 +294,8 @@ fn tampering_is_rejected<B: Backend>() {
             "byte {i}"
         );
     }
-    let refund = issue_refund(&setup.params, &setup.key, CTX, &message, 1).unwrap();
+    let verified = verify_spend(&setup.params, &setup.key, CTX, CHALLENGE, &message).unwrap();
+    let refund = issue_refund(verified, 1).unwrap();
     let refund_bytes = refund.to_bytes();
     let state_bytes = state.to_bytes();
     for i in (0..refund_bytes.len()).step_by(5) {
@@ -429,7 +446,7 @@ fn proofs_are_deterministic_in_the_randomness<B: Backend>() {
     let (_, second) =
         prove_spend_with(&setup.params, credential, CTX, 2, 0, CHALLENGE, &mut rng).unwrap();
     assert_eq!(first.to_bytes(), second.to_bytes());
-    verify_spend(&setup.params, &setup.key, CTX, CHALLENGE, &second).unwrap();
+    let _verified = verify_spend(&setup.params, &setup.key, CTX, CHALLENGE, &second).unwrap();
 }
 
 /// `ValidateInstance` checks 8 and 9 for elements and images that are
@@ -532,6 +549,7 @@ backend_tests!(
     full_flow,
     contexts_are_bound,
     refunds_are_bound_to_their_spend,
+    unverified_spend_cannot_authorize_refund,
     amounts_are_bounded,
     balance_width_bounds,
     tampering_is_rejected,

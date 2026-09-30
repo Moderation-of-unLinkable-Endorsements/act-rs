@@ -102,9 +102,14 @@ fn bench_backend<B: Backend>(c: &mut Criterion, backend: &str) {
                 b.iter(|| verify_spend(&params, &key, CTX_CRED, CTX_SPEND, &spend).unwrap())
             });
             group.bench_with_input(BenchmarkId::new("issue_refund", shape), &shape, |b, _| {
-                b.iter(|| issue_refund(&params, &key, CTX_CRED, &spend, t).unwrap())
+                b.iter_batched(
+                    || verify_spend(&params, &key, CTX_CRED, CTX_SPEND, &spend).unwrap(),
+                    |verified| issue_refund(verified, t).unwrap(),
+                    BatchSize::SmallInput,
+                )
             });
-            let refund = issue_refund(&params, &key, CTX_CRED, &spend, t).unwrap();
+            let verified = verify_spend(&params, &key, CTX_CRED, CTX_SPEND, &spend).unwrap();
+            let refund = issue_refund(verified, t).unwrap();
             let state_bytes = state.to_bytes();
             group.bench_with_input(
                 BenchmarkId::new("finalize_refund", shape),

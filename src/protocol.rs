@@ -331,6 +331,49 @@ impl<B: Backend> SpendMessage<B> {
     }
 }
 
+/// Evidence that a [`SpendMessage`] passed [`verify_spend`] under a specific
+/// Moderator key, configuration, credential context, and spend context.
+///
+/// This value cannot be constructed or cloned by callers. Before consuming it
+/// with [`issue_refund`], the Moderator must still grant its allowance and
+/// atomically reject and record its nullifier. Holding the value borrows the
+/// exact message, key, and configuration that were verified.
+#[must_use = "check the allowance and nullifier, then pass this value to issue_refund"]
+pub struct VerifiedSpend<'a, B: Backend = DefaultBackend> {
+    params: &'a Params<B>,
+    key: &'a SecretKey<B>,
+    spend: &'a SpendMessage<B>,
+    ctx: B::Scalar,
+    k_prime: B::Point,
+}
+
+impl<B: Backend> VerifiedSpend<'_, B> {
+    /// The nullifier of the verified Credential, big-endian.
+    pub fn nullifier(&self) -> [u8; SCALAR_LENGTH] {
+        self.spend.nullifier()
+    }
+
+    /// The verified spent amount `s`.
+    pub fn amount(&self) -> u64 {
+        self.spend.amount()
+    }
+
+    /// The verified top-up allowance `a`.
+    pub fn allowance(&self) -> u64 {
+        self.spend.allowance()
+    }
+}
+
+impl<B: Backend> fmt::Debug for VerifiedSpend<'_, B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VerifiedSpend")
+            .field("nullifier", &self.nullifier())
+            .field("amount", &self.amount())
+            .field("allowance", &self.allowance())
+            .finish_non_exhaustive()
+    }
+}
+
 /// The Moderator's refund: a signature on the remainder plus `t`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefundMessage<B: Backend = DefaultBackend> {
@@ -856,18 +899,19 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
     Ok((state, message))
 }
 
-/// `VerifySpend`: checks a spend proof under the Moderator's key and
-/// contexts.
+/// `VerifySpend`: checks a spend proof under the Moderator's key and contexts,
+/// returning the evidence required by [`issue_refund`].
 ///
 /// Does not check the nullifier against the Moderator's record, nor
-/// whether the Moderator grants the allowance `a`; the caller must do both.
-pub fn verify_spend<B: Backend>(
-    params: &Params<B>,
-    key: &SecretKey<B>,
+/// whether the Moderator grants the allowance `a`; the caller must do both
+/// before issuing a refund.
+pub fn verify_spend<'a, B: Backend>(
+    params: &'a Params<B>,
+    key: &'a SecretKey<B>,
     ctx_cred: &[u8],
     ctx_spend: &[u8],
-    spend: &SpendMessage<B>,
-) -> Result<(), Error> {
+    spend: &'a SpendMessage<B>,
+) -> Result<VerifiedSpend<'a, B>, Error> {
     let gens = &params.gens;
     params.check_amount(spend.s)?;
     params.check_amount(spend.a)?;
@@ -876,8 +920,14 @@ pub fn verify_spend<B: Backend>(
     // `A_bar` is a function of the signing key; it does not outlive the check.
     let a_bar = SecretPoint(spend.a_prime.mul(&key.sk));
     let h1_prime = fixed::<B, 2>([(&gens.h2, &spend.k), (&gens.h4, &ctx)]).add(&gens.g);
-    spend_statement(params, spend, &a_bar, &h1_prime).and_then(|statement| {
-        sigma::verify::<B, _>(&sigma::session_id::<B>(&tag), &statement, &spend.pok)
+    let statement = spend_statement(params, spend, &a_bar, &h1_prime)?;
+    sigma::verify::<B, _>(&sigma::session_id::<B>(&tag), &statement, &spend.pok)?;
+    Ok(VerifiedSpend {
+        params,
+        key,
+        spend,
+        ctx,
+        k_prime: balance_commitment(params, spend)?,
     })
 }
 
@@ -929,39 +979,49 @@ fn refund_message<B: Backend>(
         .add(k_prime)
 }
 
-/// `IssueRefund`: after a successful `verify_spend`, signs the remainder
-/// plus the return amount `t`, where `t <= s + a`.
+/// `IssueRefund`: consumes evidence of a successful [`verify_spend`] and signs
+/// the remainder plus the return amount `t`, where `t <= s + a`.
+///
+/// Before calling this function, the Moderator must grant the verified
+/// allowance and atomically reject and record the verified nullifier together
+/// with the refund.
+///
+/// A raw [`SpendMessage`] cannot reach the refund signer:
+///
+/// ```compile_fail
+/// use act::{Params, RefundMessage, SecretKey, SpendMessage};
+///
+/// fn refund_unverified(
+///     params: &Params,
+///     key: &SecretKey,
+///     spend: &SpendMessage,
+/// ) -> Result<RefundMessage, act::Error> {
+///     act::issue_refund(params, key, b"credential context", spend, 0)
+/// }
+/// ```
 pub fn issue_refund<B: Backend>(
-    params: &Params<B>,
-    key: &SecretKey<B>,
-    ctx_cred: &[u8],
-    spend: &SpendMessage<B>,
+    verified: VerifiedSpend<'_, B>,
     t: u64,
 ) -> Result<RefundMessage<B>, Error> {
-    issue_refund_with(
-        params,
-        key,
-        ctx_cred,
-        spend,
-        t,
-        &mut SystemRandom::<B>::new(),
-    )
+    issue_refund_with(verified, t, &mut SystemRandom::<B>::new())
 }
 
 pub(crate) fn issue_refund_with<B: Backend, R: Random>(
-    params: &Params<B>,
-    key: &SecretKey<B>,
-    ctx_cred: &[u8],
-    spend: &SpendMessage<B>,
+    verified: VerifiedSpend<'_, B>,
     t: u64,
     rng: &mut R,
 ) -> Result<RefundMessage<B>, Error> {
+    let VerifiedSpend {
+        params,
+        key,
+        spend,
+        ctx,
+        k_prime,
+    } = verified;
     params.check_amount(t)?;
     if u128::from(t) > u128::from(spend.s) + u128::from(spend.a) {
         return Err(Error::Amount);
     }
-    let ctx = context_scalar::<B>(ctx_cred)?;
-    let k_prime = balance_commitment(params, spend)?;
     let x_a = refund_message(&params.gens, &k_prime, t, &ctx);
     let (a, e, pok) = sign(key, b"Refund", &params.sid_refund, &x_a, rng)?;
     Ok(RefundMessage { a, e, t, pok })
