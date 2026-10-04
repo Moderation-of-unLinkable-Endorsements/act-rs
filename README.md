@@ -218,9 +218,11 @@ of every statement, and RFC 9380 known answers for the primitives.
 Continuous integration (`.github/workflows/ci.yml`) runs on every change:
 format, clippy with warnings denied, tests and docs on both backends, the
 feature powerset, the library on the minimum Rust version (1.85), 32-bit and
-wasm targets, unused-dependency and `cargo deny` checks. A weekly workflow
-(`.github/workflows/nightly.yml`) runs Miri over the pure-Rust primitives,
-mutation testing of the proof and encoding modules, and coverage.
+wasm targets, unused-dependency and `cargo deny` checks, and mutation testing
+of the lines the change touches. A weekly workflow
+(`.github/workflows/nightly.yml`) runs Miri over the pure-Rust primitives and
+coverage; on demand, it also runs mutation testing of the proof and encoding
+modules. `.cargo/mutants.toml` lists what mutation testing skips, and why.
 
 ## License
 
