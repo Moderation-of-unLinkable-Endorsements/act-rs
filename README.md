@@ -13,9 +13,7 @@ the remainder plus a Moderator-chosen return amount. The Moderator never learns
 the balance and cannot link a spend to the issuance or refund that produced
 the Credential, nor two spends to each other.
 
-The implementation tracks the draft at commit
-[`03d3069`](https://github.com/Moderation-of-unLinkable-Endorsements/internet-drafts/commit/03d3069fd0a4080b8c3d7ba026f63178796adfe8)
-of the drafts repository, whose scalar derivation is that of
+The implementation tracks the draft, whose scalar derivation is that of
 draft-authors-mole-rollatini, and reproduces its test vectors byte for byte.
 
 ## Usage
