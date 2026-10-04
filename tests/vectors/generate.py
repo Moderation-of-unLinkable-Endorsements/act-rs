@@ -15,9 +15,9 @@
 """Generate the extended ACT test vectors from the draft's reference
 implementation, in the draft's `key = value` format.
 
-Run from the `poc/` directory of the internet-drafts repository at commit
-03d3069fd0a4080b8c3d7ba026f63178796adfe8, with its virtual environment and
-the sigma-protocols submodule set up as its README describes:
+Run from the `poc/` directory of the internet-drafts repository, with its
+virtual environment and the sigma-protocols submodule set up as its README
+describes:
 
     python generate.py L "s:a:t,s:a:t,..." [initial_balance] > act-L<L>.txt
 
