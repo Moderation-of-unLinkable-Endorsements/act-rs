@@ -18,7 +18,7 @@
 use alloc::vec::Vec;
 
 use super::{Replay, os_rng};
-use crate::backend::{Backend, FixedBase, POINT_LENGTH, SCALAR_LENGTH, Scalar};
+use crate::backend::{Backend, FixedBase, POINT_LENGTH, Point, SCALAR_LENGTH, Scalar};
 use crate::protocol::{
     ClientIssuanceState, ClientSpendState, Credential, IssueRequestMessage, IssueResponseMessage,
     Params, PublicKey, RefundMessage, SecretKey, SpendMessage, finalize_issue, finalize_refund,
@@ -271,6 +271,37 @@ fn weighted_ranges_cover_exact_bounds() {
     assert_eq!(range_weights(4, 16), Err(Error::Amount));
     assert_eq!(spend_weights(4, 16, 0), Err(Error::Amount));
     assert_eq!(spend_weights(4, 0, 16), Err(Error::Amount));
+}
+
+fn weighted_sums_match_direct_calculation<B: Backend>() {
+    use crate::statements::{range_weights, weighted_points, weighted_scalars};
+
+    let generator = B::Point::generator();
+    for l in 1..=8 {
+        let max = (1u64 << l) - 1;
+        for m in 0..=max {
+            let weights = range_weights(l, m).unwrap();
+            let scalars = (1..=weights.len())
+                .map(|value| B::Scalar::from(value as u64))
+                .collect::<Vec<_>>();
+            let points = scalars
+                .iter()
+                .map(|scalar| generator.mul(scalar))
+                .collect::<Vec<_>>();
+            let expected = scalars
+                .iter()
+                .zip(&weights)
+                .fold(B::Scalar::default(), |sum, (scalar, weight)| {
+                    sum + *scalar * B::Scalar::from(*weight)
+                });
+
+            assert_eq!(
+                weighted_scalars(&scalars, &weights).to_bytes(),
+                expected.to_bytes()
+            );
+            assert_eq!(weighted_points(&points, &weights), generator.mul(&expected));
+        }
+    }
 }
 
 fn tampering_is_rejected<B: Backend>() {
@@ -609,6 +640,7 @@ backend_tests!(
     unverified_spend_cannot_authorize_refund,
     amounts_are_bounded,
     balance_width_bounds,
+    weighted_sums_match_direct_calculation,
     tampering_is_rejected,
     shape_must_match_amounts,
     non_canonical_encodings_are_rejected,

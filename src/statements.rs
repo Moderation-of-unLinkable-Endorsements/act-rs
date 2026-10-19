@@ -82,25 +82,79 @@ pub(crate) fn spend_weights(l: usize, s: u64, a: u64) -> Result<Vec<u64>, Error>
 }
 
 /// `sum_j weights[j] * scalars[j]`, in constant time in the scalars.
+///
+/// [`range_weights`] makes every weight except possibly the last a power of
+/// two, so Horner's rule avoids a field multiplication for each such term.
 pub(crate) fn weighted_scalars<S: Scalar>(scalars: &[S], weights: &[u64]) -> S {
     debug_assert_eq!(scalars.len(), weights.len());
-    scalars
+    let Some((last, prefix)) = scalars.split_last() else {
+        return S::default();
+    };
+    let Some((&last_weight, prefix_weights)) = weights.split_last() else {
+        return S::default();
+    };
+    debug_assert!(
+        prefix_weights
+            .iter()
+            .enumerate()
+            .all(|(j, weight)| *weight == 1u64 << j)
+    );
+
+    if last_weight == 1u64 << prefix.len() {
+        return scalars
+            .iter()
+            .rev()
+            .fold(S::default(), |acc, scalar| acc + acc + *scalar);
+    }
+
+    let prefix_sum = prefix
         .iter()
-        .zip(weights)
-        .fold(S::default(), |acc, (scalar, weight)| {
-            acc + *scalar * S::from(*weight)
-        })
+        .rev()
+        .fold(S::default(), |acc, scalar| acc + acc + *scalar);
+    let last_term = if last_weight == 1 {
+        *last
+    } else {
+        *last * S::from(last_weight)
+    };
+    prefix_sum + last_term
 }
 
 /// `sum_j weights[j] * points[j]` for public points and weights.
+///
+/// As above, Horner's rule replaces almost all scalar multiplications with
+/// point doublings and additions.
 pub(crate) fn weighted_points<P: Point>(points: &[P], weights: &[u64]) -> P {
     debug_assert_eq!(points.len(), weights.len());
-    points
+    let Some((last, prefix)) = points.split_last() else {
+        return P::identity();
+    };
+    let Some((&last_weight, prefix_weights)) = weights.split_last() else {
+        return P::identity();
+    };
+    debug_assert!(
+        prefix_weights
+            .iter()
+            .enumerate()
+            .all(|(j, weight)| *weight == 1u64 << j)
+    );
+
+    if last_weight == 1u64 << prefix.len() {
+        return points
+            .iter()
+            .rev()
+            .fold(P::identity(), |acc, point| acc.double().add(point));
+    }
+
+    let prefix_sum = prefix
         .iter()
-        .zip(weights)
-        .fold(P::identity(), |acc, (point, weight)| {
-            acc.add(&point.mul(&P::Scalar::from(*weight)))
-        })
+        .rev()
+        .fold(P::identity(), |acc, point| acc.double().add(point));
+    let last_term = if last_weight == 1 {
+        last.clone()
+    } else {
+        last.mul(&P::Scalar::from(last_weight))
+    };
+    prefix_sum.add(&last_term)
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +397,16 @@ impl<'a, B: Backend> Spend<'a, B> {
         })
     }
 
+    /// `BalanceCommitment(proof)`: `K_n + V1`, reusing the weighted sum
+    /// already computed while constructing the statement.
+    pub(crate) fn balance_commitment(&self) -> B::Point {
+        let v1 = match &self.remainder {
+            Remainder::Bits(range) => &range.sum,
+            Remainder::Single(com_c) => com_c,
+        };
+        self.k_n.add(v1)
+    }
+
     fn serialize_range(&self, w: &mut RelationWriter<'_>, range: &Range<'_, B>) {
         let l = range.len();
         for j in 0..l {
@@ -373,22 +437,27 @@ impl<'a, B: Backend> Spend<'a, B> {
         }
     }
 
-    fn commit_range(&self, range: &Range<'_, B>, n: &[B::Scalar], out: &mut Vec<B::Point>) {
+    fn commit_range(
+        &self,
+        range: &Range<'_, B>,
+        n: &[B::Scalar],
+        k_n_commitment: B::Point,
+        out: &mut Vec<B::Point>,
+    ) {
         let (h1, h3) = (&self.gens.h1, &self.gens.h3);
         let bits = &n[range.bits()];
         let blindings = &n[range.blindings()];
         let products = &n[range.products()];
+        // Reuse the commitment to `K_n = kstar * H2 + rn * H3` in the sum
+        // equation, adding only the terms that are not already in it.
+        let h3_scalar = weighted_scalars(blindings, &range.weights);
+        let sum_commitment = k_n_commitment.add(&fixed::<B, 2>([(h1, &n[C]), (h3, &h3_scalar)]));
+        out.push(k_n_commitment);
         for j in 0..range.len() {
             out.push(fixed::<B, 2>([(h1, &bits[j]), (h3, &blindings[j])]));
             out.push(range.com[j].mul(&bits[j]).add(&h3.mul(&products[j])));
         }
-        // Same-base terms merge into one `H3` multiplication.
-        let h3_scalar = n[RN] + weighted_scalars(blindings, &range.weights);
-        out.push(fixed::<B, 3>([
-            (h1, &n[C]),
-            (&self.gens.h2, &n[KSTAR]),
-            (h3, &h3_scalar),
-        ]));
+        out.push(sum_commitment);
     }
 
     fn simulate_range(
@@ -396,6 +465,7 @@ impl<'a, B: Backend> Spend<'a, B> {
         range: &Range<'_, B>,
         c: &B::Scalar,
         z: &[B::Scalar],
+        k_n_commitment: B::Point,
         out: &mut Vec<B::Point>,
     ) {
         let (h1, h3) = (&self.gens.h1, &self.gens.h3);
@@ -403,6 +473,14 @@ impl<'a, B: Backend> Spend<'a, B> {
         let bits = &z[range.bits()];
         let blindings = &z[range.blindings()];
         let products = &z[range.products()];
+        // As in `commit_range`, reuse the simulated `K_n` equation.
+        let h1_scalar = z[C] - *c * B::Scalar::from(range.s);
+        let h3_scalar = weighted_scalars(blindings, &range.weights);
+        let generators = fixed::<B, 2>([(h1, &h1_scalar), (h3, &h3_scalar)]);
+        let sum_commitment = k_n_commitment
+            .add(&generators)
+            .add(&range.sum.mul(&minus_c));
+        out.push(k_n_commitment);
         for j in 0..range.len() {
             let com = &range.com[j];
             let generators = fixed::<B, 2>([(h1, &bits[j]), (h3, &blindings[j])]);
@@ -411,18 +489,7 @@ impl<'a, B: Backend> Spend<'a, B> {
             out.push(com.mul(&(bits[j] - *c)).add(&h3.mul(&products[j])));
         }
         // Subtract the challenge times `K_n + s * H1 + sum w[j] * Com1[j]`.
-        let h1_scalar = z[C] - *c * B::Scalar::from(range.s);
-        let h3_scalar = z[RN] + weighted_scalars(blindings, &range.weights);
-        let generators = fixed::<B, 3>([
-            (h1, &h1_scalar),
-            (&self.gens.h2, &z[KSTAR]),
-            (h3, &h3_scalar),
-        ]);
-        out.push(
-            generators
-                .add(&self.k_n.mul(&minus_c))
-                .add(&range.sum.mul(&minus_c)),
-        );
+        out.push(sum_commitment);
     }
 }
 
@@ -522,10 +589,11 @@ impl<B: Backend> Statement<B> for Spend<'_, B> {
         ]));
         let generators = fixed::<B, 2>([(&gens.h1, &-n[C]), (&gens.h3, &-n[R])]);
         out.push(self.b_bar.mul(&n[R3]).add(&generators));
-        out.push(fixed::<B, 2>([(&gens.h2, &n[KSTAR]), (&gens.h3, &n[RN])]));
+        let k_n_commitment = fixed::<B, 2>([(&gens.h2, &n[KSTAR]), (&gens.h3, &n[RN])]);
         match &self.remainder {
-            Remainder::Bits(range) => self.commit_range(range, n, out),
+            Remainder::Bits(range) => self.commit_range(range, n, k_n_commitment, out),
             Remainder::Single(_) => {
+                out.push(k_n_commitment);
                 out.push(fixed::<B, 2>([
                     (&gens.h1, &n[C]),
                     (&gens.h3, &n[FIXED_SCALARS]),
@@ -547,10 +615,11 @@ impl<B: Backend> Statement<B> for Spend<'_, B> {
             B::Point::lincomb([(self.b_bar, &z[R3]), (self.h1_prime, &minus_c)]).add(&generators),
         );
         let generators = fixed::<B, 2>([(&gens.h2, &z[KSTAR]), (&gens.h3, &z[RN])]);
-        out.push(generators.add(&self.k_n.mul(&minus_c)));
+        let k_n_commitment = generators.add(&self.k_n.mul(&minus_c));
         match &self.remainder {
-            Remainder::Bits(range) => self.simulate_range(range, c, z, out),
+            Remainder::Bits(range) => self.simulate_range(range, c, z, k_n_commitment, out),
             Remainder::Single(com_c) => {
+                out.push(k_n_commitment);
                 let generators = fixed::<B, 2>([(&gens.h1, &z[C]), (&gens.h3, &z[FIXED_SCALARS])]);
                 out.push(generators.add(&com_c.mul(&minus_c)));
             }

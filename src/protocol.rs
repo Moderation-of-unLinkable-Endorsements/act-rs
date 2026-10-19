@@ -25,9 +25,7 @@ use crate::backend::{Backend, FixedBase, POINT_LENGTH, Point, SCALAR_LENGTH, Sca
 use crate::hash::{self, NSEED};
 use crate::random::{Random, SystemRandom};
 use crate::sigma;
-use crate::statements::{
-    Commitment, Signature, Spend, fixed, spend_weights, weighted_points, weighted_scalars,
-};
+use crate::statements::{Commitment, Signature, Spend, fixed, spend_weights, weighted_scalars};
 use crate::{DefaultBackend, Error, MAX_BALANCE_WIDTH};
 
 /// The group generator `B` and the four ciphersuite generators, the latter
@@ -927,12 +925,13 @@ pub fn verify_spend<'a, B: Backend>(
     let h1_prime = fixed::<B, 2>([(&gens.h2, &spend.k), (&gens.h4, &ctx)]).add(&gens.g);
     let statement = spend_statement(params, spend, &a_bar, &h1_prime)?;
     sigma::verify::<B, _>(&sigma::session_id::<B>(&tag), &statement, &spend.pok)?;
+    let k_prime = statement.balance_commitment();
     Ok(VerifiedSpend {
         params,
         key,
         spend,
         ctx,
-        k_prime: balance_commitment(params, spend)?,
+        k_prime,
     })
 }
 
@@ -955,24 +954,6 @@ fn spend_statement<'a, B: Backend>(
         &spend.com1,
         spend.com_c.as_ref(),
     )
-}
-
-/// `BalanceCommitment(proof)`: `K_n + V1`, which the refund signs, with
-/// `V1` the weighted bit commitments combined or, for a refresh, `Com_c`.
-fn balance_commitment<B: Backend>(
-    params: &Params<B>,
-    spend: &SpendMessage<B>,
-) -> Result<B::Point, Error> {
-    let refresh = spend.s == 0 && spend.a == 0;
-    let weights = spend_weights(params.l(), spend.s, spend.a)?;
-    let v1 = match (&spend.com_c, refresh) {
-        // `spend_statement` checked the exact `Com1`/`Com_c` shape before
-        // proof verification; this function is reached only after that check.
-        (None, false) => weighted_points(&spend.com1, &weights),
-        (Some(com_c), true) => com_c.clone(),
-        _ => return Err(Error::Verify),
-    };
-    Ok(spend.k_n.add(&v1))
 }
 
 /// `B + K_prime + t * H1 + ctx * H4`, the message a refund signs.
