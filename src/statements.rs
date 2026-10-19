@@ -84,7 +84,8 @@ pub(crate) fn spend_weights(l: usize, s: u64, a: u64) -> Result<Vec<u64>, Error>
 /// `sum_j weights[j] * scalars[j]`, in constant time in the scalars.
 ///
 /// [`range_weights`] makes every weight except possibly the last a power of
-/// two, so Horner's rule avoids a field multiplication for each such term.
+/// two. A single Horner pass over the public weight bits avoids field
+/// multiplications altogether.
 pub(crate) fn weighted_scalars<S: Scalar>(scalars: &[S], weights: &[u64]) -> S {
     debug_assert_eq!(scalars.len(), weights.len());
     let Some((last, prefix)) = scalars.split_last() else {
@@ -100,29 +101,22 @@ pub(crate) fn weighted_scalars<S: Scalar>(scalars: &[S], weights: &[u64]) -> S {
             .all(|(j, weight)| *weight == 1u64 << j)
     );
 
-    if last_weight == 1u64 << prefix.len() {
-        return scalars
-            .iter()
-            .rev()
-            .fold(S::default(), |acc, scalar| acc + acc + *scalar);
-    }
-
-    let prefix_sum = prefix
-        .iter()
-        .rev()
-        .fold(S::default(), |acc, scalar| acc + acc + *scalar);
-    let last_term = if last_weight == 1 {
-        *last
-    } else {
-        *last * S::from(last_weight)
-    };
-    prefix_sum + last_term
+    (0..=prefix.len()).rev().fold(S::default(), |acc, bit| {
+        let mut acc = acc + acc;
+        if bit < prefix.len() {
+            acc = acc + prefix[bit];
+        }
+        if last_weight & (1u64 << bit) != 0 {
+            acc = acc + *last;
+        }
+        acc
+    })
 }
 
 /// `sum_j weights[j] * points[j]` for public points and weights.
 ///
-/// As above, Horner's rule replaces almost all scalar multiplications with
-/// point doublings and additions.
+/// As above, one Horner pass replaces scalar multiplications with point
+/// doublings and additions. Its control flow depends only on public weights.
 pub(crate) fn weighted_points<P: Point>(points: &[P], weights: &[u64]) -> P {
     debug_assert_eq!(points.len(), weights.len());
     let Some((last, prefix)) = points.split_last() else {
@@ -138,23 +132,16 @@ pub(crate) fn weighted_points<P: Point>(points: &[P], weights: &[u64]) -> P {
             .all(|(j, weight)| *weight == 1u64 << j)
     );
 
-    if last_weight == 1u64 << prefix.len() {
-        return points
-            .iter()
-            .rev()
-            .fold(P::identity(), |acc, point| acc.double().add(point));
-    }
-
-    let prefix_sum = prefix
-        .iter()
-        .rev()
-        .fold(P::identity(), |acc, point| acc.double().add(point));
-    let last_term = if last_weight == 1 {
-        last.clone()
-    } else {
-        last.mul(&P::Scalar::from(last_weight))
-    };
-    prefix_sum.add(&last_term)
+    (0..=prefix.len()).rev().fold(P::identity(), |acc, bit| {
+        let mut acc = acc.double();
+        if bit < prefix.len() {
+            acc = acc.add(&prefix[bit]);
+        }
+        if last_weight & (1u64 << bit) != 0 {
+            acc = acc.add(last);
+        }
+        acc
+    })
 }
 
 // ---------------------------------------------------------------------------
