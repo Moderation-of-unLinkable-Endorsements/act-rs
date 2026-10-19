@@ -18,7 +18,7 @@
 use alloc::vec::Vec;
 
 use super::{Replay, os_rng};
-use crate::backend::{Backend, FixedBase, Scalar};
+use crate::backend::{Backend, FixedBase, POINT_LENGTH, SCALAR_LENGTH, Scalar};
 use crate::protocol::{
     ClientIssuanceState, ClientSpendState, Credential, IssueRequestMessage, IssueResponseMessage,
     Params, PublicKey, RefundMessage, SecretKey, SpendMessage, finalize_issue, finalize_refund,
@@ -243,6 +243,36 @@ fn balance_width_bounds<B: Backend>() {
     assert_eq!(credential.balance(), u64::MAX);
 }
 
+#[test]
+fn weighted_ranges_cover_exact_bounds() {
+    use crate::statements::{range_weights, spend_weights};
+
+    for l in 1..=8 {
+        let max = (1u64 << l) - 1;
+        for m in 0..=max {
+            let weights = range_weights(l, m).unwrap();
+            assert!(weights.iter().all(|weight| *weight > 0));
+            assert_eq!(weights.iter().sum::<u64>(), m);
+
+            let mut covered = alloc::vec![false; (m + 1) as usize];
+            for subset in 0..1usize << weights.len() {
+                let sum = weights
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| subset & (1 << j) != 0)
+                    .map(|(_, weight)| weight)
+                    .sum::<u64>();
+                assert!(sum <= m);
+                covered[sum as usize] = true;
+            }
+            assert!(covered.into_iter().all(core::convert::identity));
+        }
+    }
+    assert_eq!(range_weights(4, 16), Err(Error::Amount));
+    assert_eq!(spend_weights(4, 16, 0), Err(Error::Amount));
+    assert_eq!(spend_weights(4, 0, 16), Err(Error::Amount));
+}
+
 fn tampering_is_rejected<B: Backend>() {
     let setup = new_setup::<B>(4);
     let (state, request) = issue_request(&setup.params).unwrap();
@@ -339,19 +369,47 @@ fn shape_must_match_amounts<B: Backend>() {
         SpendMessage::<B>::from_bytes(&setup.params, &extended).unwrap_err(),
         Error::Deserialize
     );
+    // The superseded two-range-proof encoding inserted a second commitment
+    // block before the proof. It must not be accepted as the current shape.
+    let proof_start = bytes.len() - message.pok.len();
+    let points_start = SCALAR_LENGTH + 2 * core::mem::size_of::<u64>();
+    let mut two_range = bytes[..proof_start].to_vec();
+    for _ in 0..usize::from(setup.params.balance_width()) {
+        two_range.extend_from_slice(&bytes[points_start..points_start + POINT_LENGTH]);
+    }
+    two_range.extend_from_slice(&bytes[proof_start..]);
     assert_eq!(
-        SpendMessage::<B>::encoded_len(&setup.params, 3, 0),
+        SpendMessage::<B>::from_bytes(&setup.params, &two_range).unwrap_err(),
+        Error::Deserialize
+    );
+    assert_eq!(
+        SpendMessage::<B>::encoded_len(&setup.params, 3, 0).unwrap(),
         129 * 4 + 403
     );
     assert_eq!(
-        SpendMessage::<B>::encoded_len(&setup.params, 0, 2),
-        129 * 4 + 468
+        SpendMessage::<B>::encoded_len(&setup.params, 0, 2).unwrap(),
+        129 * 4 + 403
     );
     assert_eq!(
-        SpendMessage::<B>::encoded_len(&setup.params, 3, 2),
-        258 * 4 + 403
+        SpendMessage::<B>::encoded_len(&setup.params, 3, 2).unwrap(),
+        129 * 4 + 403
     );
-    assert_eq!(SpendMessage::<B>::encoded_len(&setup.params, 0, 0), 468);
+    assert_eq!(
+        SpendMessage::<B>::encoded_len(&setup.params, 8, 0).unwrap(),
+        129 * 3 + 403
+    );
+    assert_eq!(
+        SpendMessage::<B>::encoded_len(&setup.params, 15, 0).unwrap(),
+        403
+    );
+    assert_eq!(
+        SpendMessage::<B>::encoded_len(&setup.params, 0, 0).unwrap(),
+        468
+    );
+    assert_eq!(
+        SpendMessage::<B>::encoded_len(&setup.params, 15, 1),
+        Err(Error::Amount)
+    );
     assert_eq!(IssueRequestMessage::<B>::LENGTH, 129);
     assert_eq!(IssueResponseMessage::<B>::LENGTH, 137);
     assert_eq!(RefundMessage::<B>::LENGTH, 137);
@@ -503,7 +561,6 @@ fn statements_reject_identity_elements<B: Backend>() {
             0,
             &[],
             Some(&com_c),
-            &[],
         )
         .unwrap()
         .validate()
@@ -512,25 +569,25 @@ fn statements_reject_identity_elements<B: Backend>() {
     assert_eq!(spend(&g, &identity), Err(Error::Verify));
     assert_eq!(spend(&g, &g), Ok(()));
 
-    // Check 9 on the sum image `s * H1 + sum 2^j Com1[j]`: with `L = 1` and
-    // `s = 1`, the commitment `-H1` makes it the identity.
+    // Check 9 on `K_n + s * H1 + sum w[j] * Com1[j]`: with `L = 1` and
+    // `s = 1`, there are no commitments and `K_n = -H1` makes it identity.
     let minus_h1 = gens.h1.mul(&-B::Scalar::from(1));
-    let com1 = [minus_h1.clone()];
-    let statement = Spend::new(gens, 1, &g, &g, &g, &g, &g, 1, 0, &com1, None, &[]).unwrap();
+    let statement = Spend::new(gens, 1, &g, &g, &g, &g, &minus_h1, 1, 0, &[], None).unwrap();
     assert_eq!(statement.validate(), Err(Error::Verify));
-    let com1 = [g.clone()];
-    let statement = Spend::new(gens, 1, &g, &g, &g, &g, &g, 1, 0, &com1, None, &[]).unwrap();
+    let statement = Spend::new(gens, 1, &g, &g, &g, &g, &g, 1, 0, &[], None).unwrap();
     assert_eq!(statement.validate(), Ok(()));
-    // The same image for the top-up block, `-a * H1 + sum 2^j Com2[j]`.
-    let com2 = [gens.h1.point().clone()];
-    let statement =
-        Spend::new(gens, 1, &g, &g, &g, &g, &g, 0, 1, &[], Some(&com_c), &com2).unwrap();
-    assert_eq!(statement.validate(), Err(Error::Verify));
 
     // Shapes that do not match the amounts are rejected at construction.
-    assert!(Spend::new(gens, 1, &g, &g, &g, &g, &g, 1, 0, &[], Some(&com_c), &[]).is_err());
-    assert!(Spend::new(gens, 1, &g, &g, &g, &g, &g, 0, 0, &com1, None, &[]).is_err());
-    assert!(Spend::new(gens, 1, &g, &g, &g, &g, &g, 0, 1, &[], Some(&com_c), &[]).is_err());
+    let com1 = [g.clone()];
+    assert!(Spend::new(gens, 1, &g, &g, &g, &g, &g, 1, 0, &[], Some(&com_c)).is_err());
+    assert!(Spend::new(gens, 1, &g, &g, &g, &g, &g, 1, 0, &com1, None).is_err());
+    assert!(Spend::new(gens, 1, &g, &g, &g, &g, &g, 0, 0, &com1, None).is_err());
+    assert!(Spend::new(gens, 1, &g, &g, &g, &g, &g, 0, 0, &[], None).is_err());
+    assert!(Spend::new(gens, 1, &g, &g, &g, &g, &g, 0, 1, &[], Some(&com_c)).is_err());
+    assert!(matches!(
+        Spend::new(gens, 1, &g, &g, &g, &g, &g, 1, 1, &[], None),
+        Err(Error::Amount)
+    ));
 }
 
 fn credentials_zeroize<B: Backend>() {

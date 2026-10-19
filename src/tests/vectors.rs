@@ -153,7 +153,10 @@ fn replay<B: Backend>(text: &str) {
         let state = ClientSpendState::from_bytes(&params, &state.to_bytes()).unwrap();
         let encoded = spend.to_bytes();
         assert_eq!(encoded, v.hex(&alloc::format!("{key_prefix}.message")));
-        assert_eq!(encoded.len(), SpendMessage::<B>::encoded_len(&params, s, a));
+        assert_eq!(
+            encoded.len(),
+            SpendMessage::<B>::encoded_len(&params, s, a).unwrap()
+        );
         let spend = SpendMessage::from_bytes(&params, &encoded).unwrap();
         assert_eq!((spend.amount(), spend.allowance()), (s, a));
         let verified = verify_spend(&params, &key, &ctx_cred, &ctx_spend, &spend).unwrap();

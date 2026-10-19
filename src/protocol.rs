@@ -25,7 +25,9 @@ use crate::backend::{Backend, FixedBase, POINT_LENGTH, Point, SCALAR_LENGTH, Sca
 use crate::hash::{self, NSEED};
 use crate::random::{Random, SystemRandom};
 use crate::sigma;
-use crate::statements::{Commitment, Signature, Spend, fixed, horner_points, horner_scalars};
+use crate::statements::{
+    Commitment, Signature, Spend, fixed, spend_weights, weighted_points, weighted_scalars,
+};
 use crate::{DefaultBackend, Error, MAX_BALANCE_WIDTH};
 
 /// The group generator `B` and the four ciphersuite generators, the latter
@@ -307,7 +309,6 @@ pub struct SpendMessage<B: Backend = DefaultBackend> {
     pub(crate) k_n: B::Point,
     pub(crate) com1: Vec<B::Point>,
     pub(crate) com_c: Option<B::Point>,
-    pub(crate) com2: Vec<B::Point>,
     pub(crate) pok: Vec<u8>,
 }
 
@@ -538,15 +539,28 @@ fn verify_signature<B: Backend>(
     sigma::verify::<B, _>(session_id, &Signature { a, x_a, x_g: &x_g }, pok)
 }
 
-/// `Bits(x)`: the `l` low bits of `x` as scalars, in constant time.
-fn bits<B: Backend>(x: u64, l: usize) -> Vec<B::Scalar> {
+/// `Bits(x, weights)`: the weighted decomposition of `x`, in constant time
+/// with respect to `x`. The public weights cover exactly `[0, m]`.
+fn bits<B: Backend>(x: u64, weights: &[u64]) -> Vec<B::Scalar> {
     let (zero, one) = (B::Scalar::default(), B::Scalar::from(1));
-    (0..l)
+    let n = weights.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let top = (x >> (n - 1)) & 1;
+    let rest = x - top * weights[n - 1];
+    let mut out: Vec<B::Scalar> = (0..n - 1)
         .map(|j| {
-            let bit = Choice::from(((x >> j) & 1) as u8);
+            let bit = Choice::from(((rest >> j) & 1) as u8);
             B::Scalar::conditional_select(&zero, &one, bit)
         })
-        .collect()
+        .collect();
+    out.push(B::Scalar::conditional_select(
+        &zero,
+        &one,
+        Choice::from(top as u8),
+    ));
+    out
 }
 
 fn proof_array<const N: usize>(bytes: Vec<u8>) -> Result<[u8; N], Error> {
@@ -567,25 +581,26 @@ type RangeBlock<B> = (
     Zeroizing<<B as Backend>::Scalar>,
 );
 
-/// A range block over `value` with blindings `s`: the bit commitments
+/// A weighted range block over `value` with blindings `s`: the bit commitments
 /// `Com[j] = b[j] * H1 + s[j] * H3`, with the bits, blindings, and products
 /// `u[j] = (1 - b[j]) * s[j]` appended to `witness` in that order. Returns the
-/// commitments and `sum_j 2^j * s[j]`, the block's contribution to the
+/// commitments and `sum_j weights[j] * s[j]`, the block's contribution to the
 /// blinding factor of the refunded Credential. Constant time in `value`.
 ///
 /// `witness` must have room for `3 * l` more scalars, so that extending it
 /// never reallocates.
 fn range_block<B: Backend>(
     gens: &Generators<B>,
-    l: usize,
     value: u64,
+    weights: &[u64],
     s: &[B::Scalar],
     witness: &mut Vec<B::Scalar>,
 ) -> Result<RangeBlock<B>, Error> {
+    let n = weights.len();
     let one = B::Scalar::from(1);
-    let blindings = s.get(..l).ok_or(Error::InvalidInput)?;
-    let bits = Zeroizing::new(bits::<B>(value, l));
-    let mut commitments = Vec::with_capacity(l);
+    let blindings = s.get(..n).ok_or(Error::InvalidInput)?;
+    let bits = Zeroizing::new(bits::<B>(value, weights));
+    let mut commitments = Vec::with_capacity(n);
     for (bit, blinding) in bits.iter().zip(blindings) {
         commitments.push(fixed::<B, 2>([(&gens.h1, bit), (&gens.h3, blinding)]));
     }
@@ -595,8 +610,8 @@ fn range_block<B: Backend>(
             .map(|(b, s)| (one - *b) * *s)
             .collect(),
     );
-    let blinding_sum = Zeroizing::new(horner_scalars(blindings));
-    debug_assert!(witness.capacity() - witness.len() >= 3 * l);
+    let blinding_sum = Zeroizing::new(weighted_scalars(blindings, weights));
+    debug_assert!(witness.capacity() - witness.len() >= 3 * n);
     witness.extend_from_slice(&bits);
     witness.extend_from_slice(blindings);
     witness.extend_from_slice(&products);
@@ -767,15 +782,17 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
         return Err(Error::Amount);
     }
     let v1 = c - s;
-    let v2 = c + a;
+    let refresh = s == 0 && a == 0;
+    let weights = spend_weights(l, s, a)?;
+    let n = weights.len();
 
     let ctx = context_scalar::<B>(ctx_cred)?;
     let tag = sigma::tag(b"Spend", &[ctx_spend])?;
     let session_id = sigma::session_id::<B>(&tag);
 
-    // Four fixed scalars, then L for the bits of the remainder or one for
-    // its commitment, then L for the bits of the topped-up balance.
-    let count = 4 + if s > 0 { l } else { 1 } + if a > 0 { l } else { 0 };
+    // Four fixed scalars, then one for each weighted bit of the remainder or
+    // one for the commitment of a refresh.
+    let count = 4 + if refresh { 1 } else { n };
     let mut rand = Zeroizing::new([0u8; NSEED]);
     rng.fill(&mut *rand);
     // `derived` holds every secret scalar of the spend and is wiped on every
@@ -784,7 +801,6 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
     let derived = hash::derive_scalars::<B>(&*rand, b"ProveSpend", count)?;
     drop(rand);
     let (r1, r2, kstar, rn) = (&derived[0], &derived[1], &derived[2], &derived[3]);
-    let mut next_scalar = 4;
 
     // Rerandomize the signature.
     let c_scalar = Zeroizing::new(B::Scalar::from(c));
@@ -808,7 +824,7 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
     let k_n = fixed::<B, 2>([(&gens.h2, kstar), (&gens.h3, rn)]);
 
     // Allocated at full size, so that no reallocation frees secret scalars.
-    let witness_len = 7 + if s > 0 { 3 * l } else { 1 } + if a > 0 { 3 * l } else { 0 };
+    let witness_len = 7 + if refresh { 1 } else { 3 * n };
     let mut witness: Zeroizing<Vec<B::Scalar>> = Zeroizing::new(Vec::with_capacity(witness_len));
     for scalar in [
         &credential.e,
@@ -823,30 +839,20 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
     }
     let mut com1 = Vec::new();
     let mut com_c = None;
-    let mut com2 = Vec::new();
 
-    // Commit to the remainder: bitwise when it must be shown to be
-    // nonnegative, in one commitment when it is the balance itself.
+    // Commit to the remainder: bitwise when it must be shown to be in the
+    // public range, in one commitment when it is the balance of a refresh.
     let r_star;
-    if s > 0 {
+    if !refresh {
         let (commitments, blinding_sum) =
-            range_block::<B>(gens, l, v1, &derived[next_scalar..], &mut witness)?;
+            range_block::<B>(gens, v1, &weights, &derived[4..], &mut witness)?;
         com1 = commitments;
         r_star = Zeroizing::new(*rn + *blinding_sum);
-        next_scalar += l;
     } else {
-        let rc = &derived[next_scalar];
+        let rc = &derived[4];
         com_c = Some(fixed::<B, 2>([(&gens.h1, &*c_scalar), (&gens.h3, rc)]));
         r_star = Zeroizing::new(*rn + *rc);
         witness.push(*rc);
-        next_scalar += 1;
-    }
-
-    // Commit to the topped-up balance when there is a top-up.
-    if a > 0 {
-        let (commitments, _) =
-            range_block::<B>(gens, l, v2, &derived[next_scalar..], &mut witness)?;
-        com2 = commitments;
     }
     debug_assert_eq!(witness.len(), witness_len);
 
@@ -863,7 +869,6 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
         a,
         &com1,
         com_c.as_ref(),
-        &com2,
     )?;
     let pok = sigma::prove::<B, _, _>(&session_id, &statement, &witness, rng)?;
 
@@ -893,7 +898,6 @@ pub(crate) fn prove_spend_with<B: Backend, R: Random>(
         k_n,
         com1,
         com_c,
-        com2,
         pok,
     };
     Ok((state, message))
@@ -915,6 +919,7 @@ pub fn verify_spend<'a, B: Backend>(
     let gens = &params.gens;
     params.check_amount(spend.s)?;
     params.check_amount(spend.a)?;
+    spend_weights(params.l(), spend.s, spend.a)?;
     let ctx = context_scalar::<B>(ctx_cred)?;
     let tag = sigma::tag(b"Spend", &[ctx_spend])?;
     // `A_bar` is a function of the signing key; it does not outlive the check.
@@ -949,19 +954,22 @@ fn spend_statement<'a, B: Backend>(
         spend.a,
         &spend.com1,
         spend.com_c.as_ref(),
-        &spend.com2,
     )
 }
 
 /// `BalanceCommitment(proof)`: `K_n + V1`, which the refund signs, with
-/// `V1` the bit commitments combined or, for `s = 0`, `Com_c`.
+/// `V1` the weighted bit commitments combined or, for a refresh, `Com_c`.
 fn balance_commitment<B: Backend>(
     params: &Params<B>,
     spend: &SpendMessage<B>,
 ) -> Result<B::Point, Error> {
-    let v1 = match (&spend.com_c, spend.s) {
-        (None, s) if s > 0 && spend.com1.len() == params.l() => horner_points(&spend.com1),
-        (Some(com_c), 0) => com_c.clone(),
+    let refresh = spend.s == 0 && spend.a == 0;
+    let weights = spend_weights(params.l(), spend.s, spend.a)?;
+    let v1 = match (&spend.com_c, refresh) {
+        // `spend_statement` checked the exact `Com1`/`Com_c` shape before
+        // proof verification; this function is reached only after that check.
+        (None, false) => weighted_points(&spend.com1, &weights),
+        (Some(com_c), true) => com_c.clone(),
         _ => return Err(Error::Verify),
     };
     Ok(spend.k_n.add(&v1))

@@ -123,12 +123,11 @@ draft is a fixed-shape statement (`src/statements.rs`) that writes its own
 `SerializeLinearRelation` bytes and evaluates its own equations. The wire
 format is unchanged; the specialization lets the code:
 
-* merge terms on a shared base, so `sum_j 2^j s[j] * H3` is one
+* merge terms on a shared base, so `sum_j w[j] s[j] * H3` is one
   multiplication;
 * fold the verifier's `-challenge * Com[j]` into the term `Com[j]` already
   carries;
-* compute `sum_j 2^j Com[j]` by Horner's rule and reuse it for the balance
-  commitment;
+* compute `sum_j w[j] Com[j]` once and reuse it for the balance commitment;
 * multiply the ciphersuite generators through fixed-base tables built once
   per `Params` (the `rustcrypto` backend; 72 KiB per generator, 288 KiB
   for the four), and
