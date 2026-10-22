@@ -28,7 +28,7 @@ use crate::protocol::{
     ClientIssuanceState, ClientSpendState, Credential, IssueRequestMessage, IssueResponseMessage,
     Params, RefundMessage, SpendMessage, point_bytes,
 };
-use crate::statements::spend_witness_count;
+use crate::statements::{spend_weights, spend_witness_count};
 
 /// Length of a `uint64` amount on the wire.
 const AMOUNT_LENGTH: usize = 8;
@@ -182,19 +182,24 @@ impl<B: Backend> RefundMessage<B> {
 impl<B: Backend> SpendMessage<B> {
     /// The encoded length of a spend of `s` with allowance `a` at the
     /// balance width of `params`.
-    pub fn encoded_len(params: &Params<B>, s: u64, a: u64) -> usize {
+    pub fn encoded_len(params: &Params<B>, s: u64, a: u64) -> Result<usize, Error> {
         let l = usize::from(params.balance_width());
-        let commitments = 3 + if s > 0 { l } else { 1 } + if a > 0 { l } else { 0 };
-        SCALAR_LENGTH
+        let refresh = s == 0 && a == 0;
+        let commitments = 3 + if refresh {
+            1
+        } else {
+            spend_weights(l, s, a)?.len()
+        };
+        Ok(SCALAR_LENGTH
             + 2 * AMOUNT_LENGTH
             + commitments * POINT_LENGTH
-            + (spend_witness_count(l, s, a) + 1) * SCALAR_LENGTH
+            + (spend_witness_count(l, s, a)? + 1) * SCALAR_LENGTH)
     }
 
     /// Encodes as `Scalar k || uint64 s || uint64 a || Element A_prime ||
-    /// Element B_bar || Element K_n || Com1[L] or Com_c || Com2[L] || pok`.
+    /// Element B_bar || Element K_n || Com1[n] or Com_c || pok`.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let points = 3 + self.com1.len() + usize::from(self.com_c.is_some()) + self.com2.len();
+        let points = 3 + self.com1.len() + usize::from(self.com_c.is_some());
         let length = SCALAR_LENGTH + 2 * AMOUNT_LENGTH + points * POINT_LENGTH + self.pok.len();
         let mut out = Vec::with_capacity(length);
         out.extend_from_slice(&self.k.to_bytes());
@@ -203,7 +208,7 @@ impl<B: Backend> SpendMessage<B> {
         for point in [&self.a_prime, &self.b_bar, &self.k_n] {
             out.extend_from_slice(&point_bytes(point));
         }
-        for point in self.com1.iter().chain(&self.com_c).chain(&self.com2) {
+        for point in self.com1.iter().chain(&self.com_c) {
             out.extend_from_slice(&point_bytes(point));
         }
         out.extend_from_slice(&self.pok);
@@ -219,17 +224,18 @@ impl<B: Backend> SpendMessage<B> {
         let k = reader.scalar::<B>()?;
         let s = reader.amount(params)?;
         let a = reader.amount(params)?;
+        let refresh = s == 0 && a == 0;
+        let weights = spend_weights(l, s, a)?;
         let a_prime = reader.element::<B>()?;
         let b_bar = reader.element::<B>()?;
         let k_n = reader.element::<B>()?;
-        let com1 = reader.elements::<B>(if s > 0 { l } else { 0 })?;
-        let com_c = if s == 0 {
+        let com1 = reader.elements::<B>(if refresh { 0 } else { weights.len() })?;
+        let com_c = if refresh {
             Some(reader.element::<B>()?)
         } else {
             None
         };
-        let com2 = reader.elements::<B>(if a > 0 { l } else { 0 })?;
-        let pok = reader.proof::<B>(spend_witness_count(l, s, a))?.to_vec();
+        let pok = reader.proof::<B>(spend_witness_count(l, s, a)?)?.to_vec();
         reader.finish()?;
         Ok(Self {
             k,
@@ -240,7 +246,6 @@ impl<B: Backend> SpendMessage<B> {
             k_n,
             com1,
             com_c,
-            com2,
             pok,
         })
     }
