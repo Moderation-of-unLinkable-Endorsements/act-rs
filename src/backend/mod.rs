@@ -20,6 +20,10 @@
 
 use core::fmt::Debug;
 
+use zeroize::Zeroizing;
+
+use crate::SEED_LENGTH;
+
 pub use ec_ihat::backend::{ORDER, POINT_LENGTH, Point, SCALAR_LENGTH, Scalar, Sha256};
 
 #[cfg(feature = "rustcrypto")]
@@ -97,4 +101,11 @@ pub trait Backend: 'static + Copy + Debug + Default + PartialEq + Eq + Send + Sy
 
     /// Fills `buf` from the operating system's cryptographic random generator.
     fn random_bytes(buf: &mut [u8]);
+
+    /// A fresh seed for [`SecretKey::from_seed`](crate::SecretKey::from_seed).
+    fn generate_seed() -> Zeroizing<[u8; SEED_LENGTH]> {
+        let mut seed = Zeroizing::new([0u8; SEED_LENGTH]);
+        Self::random_bytes(seed.as_mut());
+        seed
+    }
 }

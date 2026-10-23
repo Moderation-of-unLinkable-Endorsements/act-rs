@@ -17,7 +17,7 @@
 
 use alloc::vec::Vec;
 
-use super::{Replay, os_rng};
+use super::{Replay, os_rng, random_key};
 use crate::backend::{Backend, FixedBase, POINT_LENGTH, Point, SCALAR_LENGTH, Scalar};
 use crate::protocol::{
     ClientIssuanceState, ClientSpendState, Credential, IssueRequestMessage, IssueResponseMessage,
@@ -49,7 +49,7 @@ struct Setup<B: Backend> {
 
 fn new_setup<B: Backend>(l: u8) -> Setup<B> {
     let params = Params::<B>::new(l).unwrap();
-    let key = SecretKey::<B>::generate().unwrap();
+    let key = random_key::<B>(&mut os_rng::<B>());
     let public_key = key.public_key();
     Setup {
         params,
@@ -519,32 +519,25 @@ fn non_canonical_encodings_are_rejected<B: Backend>() {
         PublicKey::<B>::from_bytes(&[0; 33]).unwrap_err(),
         Error::Deserialize
     );
-    assert_eq!(
-        SecretKey::<B>::from_bytes(&[0; 32]).unwrap_err(),
-        Error::Deserialize
-    );
-    assert_eq!(
-        SecretKey::<B>::from_bytes(&crate::backend::ORDER).unwrap_err(),
-        Error::Deserialize
-    );
 }
 
 fn keys_round_trip<B: Backend>() {
-    let key = SecretKey::<B>::generate().unwrap();
-    let restored = SecretKey::<B>::from_bytes(&key.to_bytes()).unwrap();
-    assert_eq!(restored.public_key(), key.public_key());
+    let key = random_key::<B>(&mut os_rng::<B>());
     let public_key = PublicKey::<B>::from_bytes(&key.public_key().to_bytes()).unwrap();
     assert_eq!(public_key, key.public_key());
-    let seeded = SecretKey::<B>::from_seed(&[7; 48], b"GenerateKeyPair").unwrap();
-    let mut rng = Replay::constant(7, 48);
-    let generated = SecretKey::<B>::generate_with(&mut rng).unwrap();
-    rng.finish();
-    assert_eq!(seeded.to_bytes(), generated.to_bytes());
+    // Generated seeds are fresh.
+    let seed = B::generate_seed();
+    assert_ne!(*seed, *B::generate_seed());
+    SecretKey::<B>::from_seed(&seed).unwrap();
+    // A seed determines its key.
+    let seeded = SecretKey::<B>::from_seed(&[7; 48]).unwrap();
+    assert_eq!(
+        seeded.public_key(),
+        SecretKey::<B>::from_seed(&[7; 48]).unwrap().public_key()
+    );
     assert_ne!(
-        seeded.to_bytes(),
-        SecretKey::<B>::from_seed(&[7; 48], b"other")
-            .unwrap()
-            .to_bytes()
+        seeded.public_key(),
+        SecretKey::<B>::from_seed(&[8; 48]).unwrap().public_key()
     );
 }
 
@@ -664,8 +657,7 @@ fn credentials_zeroize<B: Backend>() {
     let (state, _) = prove_spend(&setup.params, credential, CTX, 1, 0, CHALLENGE).unwrap();
     drop(state);
     drop(setup);
-    let mut rng = os_rng::<B>();
-    let _ = SecretKey::<B>::generate_with(&mut rng);
+    drop(random_key::<B>(&mut os_rng::<B>()));
     let _ = B::Scalar::default();
 }
 
