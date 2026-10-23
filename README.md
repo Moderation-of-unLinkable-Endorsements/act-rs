@@ -19,12 +19,13 @@ draft-authors-mole-rollatini, and reproduces its test vectors byte for byte.
 ## Usage
 
 ```rust
-use act::{Params, SecretKey};
+use act::{Backend, DefaultBackend, Params, SecretKey};
 
 let params: Params = Params::new(8)?;       // balances below 2^8
 let ctx_cred = b"epoch-42";                 // agreed out of band
 
-let secret_key = SecretKey::generate()?;    // Moderator
+let secret_key_seed = DefaultBackend::generate_seed();
+let secret_key: SecretKey = SecretKey::from_seed(&secret_key_seed)?;
 let public_key = secret_key.public_key();   // published
 
 // Issuance

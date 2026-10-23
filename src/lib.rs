@@ -33,14 +33,16 @@
 //! # Flow
 //!
 //! ```
-//! use act::{Params, SecretKey};
+//! use act::{Backend, DefaultBackend, Params, SecretKey};
 //!
 //! // Both parties agree on the balance width `L` and a credential context.
 //! let params: Params = Params::new(8)?;
 //! let ctx_cred = b"epoch-42";
 //!
-//! // The Moderator holds the key pair and publishes the public key.
-//! let secret_key = SecretKey::generate()?;
+//! // The Moderator derives its key pair from a secret random seed, which it
+//! // keeps in order to restore the key, and publishes the public key.
+//! let secret_key_seed = DefaultBackend::generate_seed();
+//! let secret_key: SecretKey = SecretKey::from_seed(&secret_key_seed)?;
 //! let public_key = secret_key.public_key();
 //!
 //! // Issuance: the Client requests, the Moderator chooses the balance.
