@@ -1,6 +1,6 @@
 # act-rs
 
-A Rust implementation of **Anonymous Credit Tokens (ACT)**, the MoLE
+A Rust implementation of **Anonymous Credit Tokens (ACT)**, the MOLE
 Credential scheme of
 [draft-authors-mole-act](https://moderation-of-unlinkable-endorsements.github.io/internet-drafts/draft-authors-mole-act.html),
 for the `P256-SHA256` ciphersuite.
