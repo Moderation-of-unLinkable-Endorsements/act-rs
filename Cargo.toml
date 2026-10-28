@@ -2,7 +2,7 @@
 name = "act-rs"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 license = "Apache-2.0"
 description = "Anonymous Credit Tokens (ACT): a keyed-verification anonymous credential with a hidden credit balance, per draft-authors-mole-act"
 repository = "https://github.com/Moderation-of-unLinkable-Endorsements/act-rs"
