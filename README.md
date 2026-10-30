@@ -29,7 +29,8 @@ let public_key = secret_key.public_key();   // published
 
 // Issuance
 let (state, request) = act::issue_request(&params)?;
-let response = act::issue_response(&params, &secret_key, ctx_cred, 100, &request)?;
+let verified = act::verify_issue_request(&params, &request)?;
+let response = act::issue_response(&secret_key, ctx_cred, 100, verified)?;
 let credential = act::finalize_issue(&params, &public_key, ctx_cred, state, &response)?;
 
 // Spending 30 credits with no top-up allowance; the Moderator returns 5.
@@ -157,6 +158,9 @@ named alongside.
 * Decoding rejects non-canonical scalars and points, the identity element,
   amounts at or above `2^L`, and spend messages whose shape does not match
   their amounts.
+* `verify_issue_request` returns an opaque `VerifiedIssueRequest`, and
+  `issue_response` only accepts this value, so a Moderator can check a request
+  before committing other state and sign only afterwards.
 * `verify_spend` returns an opaque, non-cloneable `VerifiedSpend` bound to the
   exact message, key, configuration, and contexts it checked. `issue_refund`
   only accepts this value, so it cannot sign a raw, unverified spend.

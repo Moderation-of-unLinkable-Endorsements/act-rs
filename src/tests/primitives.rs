@@ -395,7 +395,13 @@ mod parity {
         let (state, request) = crate::issue_request(&bssl).unwrap();
         let request =
             crate::IssueRequestMessage::<RustCrypto>::from_bytes(&rc, &request.to_bytes()).unwrap();
-        let response = crate::issue_response(&rc, &key_rc, b"ctx", 40, &request).unwrap();
+        let response = crate::issue_response(
+            &key_rc,
+            b"ctx",
+            40,
+            crate::verify_issue_request(&rc, &request).unwrap(),
+        )
+        .unwrap();
         let response =
             crate::IssueResponseMessage::<BoringSsl>::from_bytes(&bssl, &response.to_bytes())
                 .unwrap();

@@ -45,7 +45,8 @@
 //!
 //! // Issuance: the Client requests, the Moderator chooses the balance.
 //! let (state, request) = act::issue_request(&params)?;
-//! let response = act::issue_response(&params, &secret_key, ctx_cred, 100, &request)?;
+//! let verified = act::verify_issue_request(&params, &request)?;
+//! let response = act::issue_response(&secret_key, ctx_cred, 100, verified)?;
 //! let credential = act::finalize_issue(&params, &public_key, ctx_cred, state, &response)?;
 //! assert_eq!(credential.balance(), 100);
 //!
@@ -127,8 +128,9 @@ use core::fmt;
 pub use backend::Backend;
 pub use protocol::{
     ClientIssuanceState, ClientSpendState, Credential, IssueRequestMessage, IssueResponseMessage,
-    Params, PublicKey, RefundMessage, SecretKey, SpendMessage, VerifiedSpend, finalize_issue,
-    finalize_refund, issue_refund, issue_request, issue_response, prove_spend, verify_spend,
+    Params, PublicKey, RefundMessage, SecretKey, SpendMessage, VerifiedIssueRequest, VerifiedSpend,
+    finalize_issue, finalize_refund, issue_refund, issue_request, issue_response, prove_spend,
+    verify_issue_request, verify_spend,
 };
 
 /// The backend selected by the enabled Cargo features.
