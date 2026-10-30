@@ -14,6 +14,10 @@
 
 //! The BoringSSL backend over the `bssl-sys` FFI bindings.
 
+// TODO(boringssl): bind BoringSSL's Keccak once it is exported through a
+// public header and `bssl-sys`. For now we use the `shake` crate for both the
+// `boringssl` and `rustcrypto` backends.
+
 pub use ec_ihat::backend::boringssl::*;
 
 /// A point without precomputation: BoringSSL's public API offers tables
@@ -35,21 +39,6 @@ impl super::FixedBase<Point> for FixedPoint {
     }
 }
 
-impl super::Backend for BoringSsl {
-    type Scalar = <Self as ec_ihat::backend::Backend>::Scalar;
-    type Point = <Self as ec_ihat::backend::Backend>::Point;
+impl super::BackendFixedBaseExt for BoringSsl {
     type FixedBase = FixedPoint;
-    // TODO(boringssl): bind BoringSSL's Keccak once it is exported through a
-    // public header and `bssl-sys`; the trait in `backend::shake` is the
-    // seam. See `crypto/keccak/internal.h` in BoringSSL.
-    type Sha256 = <Self as ec_ihat::backend::Backend>::Sha256;
-    type Shake128 = super::shake::RustCryptoShake128;
-
-    fn hash_to_curve(msg: &[&[u8]], dst: &[&[u8]]) -> Option<Self::Point> {
-        <Self as ec_ihat::backend::Backend>::hash_to_curve(msg, dst)
-    }
-
-    fn random_bytes(buf: &mut [u8]) {
-        <Self as ec_ihat::backend::Backend>::random_bytes(buf);
-    }
 }

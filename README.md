@@ -54,8 +54,8 @@ returned as `Zeroizing<Vec<u8>>` because they hold secrets.
 
 ## Backends
 
-All group and hash operations go through the [`Backend`](src/backend/mod.rs)
-trait, following the design of the ATHM crate that Chromium builds. Two
+Most cryptographic operations go through IHAT's `Backend` trait, re-exported
+by this crate, following the design of the ATHM crate that Chromium builds. Two
 implementations are provided, selected by Cargo feature:
 
 | Feature       | Curve, SHA-256, hash-to-curve, randomness | SHAKE128 |
@@ -69,10 +69,11 @@ both features enabled, the test suite checks that they interoperate and that
 `boringssl` is the `DefaultBackend`. Every type takes the backend as a type
 parameter that defaults to it.
 
+ACT uses SHAKE128 from the RustCrypto `shake` crate for both backends.
 BoringSSL implements Keccak but does not export it through a public header,
-so the `boringssl` backend takes SHAKE128 from the RustCrypto `shake` crate
-until it does. The seam is the `Backend::Shake128` associated type; see
-`src/backend/shake.rs`. The sponge only ever absorbs public data.
+so the `boringssl` configuration uses RustCrypto's implementation until
+BoringSSL exposes it through a public header and the `bssl-sys` bindings.
+The sponge only ever absorbs public data; see `src/sigma.rs` for its use.
 
 ### Building the BoringSSL backend
 
