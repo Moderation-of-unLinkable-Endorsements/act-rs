@@ -127,7 +127,7 @@ mod readme {}
 
 use core::fmt;
 
-pub use backend::Backend;
+pub use backend::{Backend, BackendFixedBaseExt};
 pub use protocol::{
     ClientIssuanceState, ClientSpendState, Credential, IssueRequestMessage, IssueResponseMessage,
     Params, PublicKey, RefundMessage, SecretKey, SpendMessage, VerifiedIssueRequest, VerifiedSpend,

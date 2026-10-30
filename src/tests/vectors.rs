@@ -22,7 +22,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use super::Replay;
-use crate::backend::{Backend, Point, Scalar};
+use crate::backend::{BackendFixedBaseExt, Point, Scalar};
 use crate::protocol::{
     ClientIssuanceState, ClientSpendState, Credential, IssueRequestMessage, IssueResponseMessage,
     Params, RefundMessage, SecretKey, SpendMessage, finalize_issue, finalize_refund,
@@ -81,7 +81,7 @@ impl Vectors {
     }
 }
 
-fn replay<B: Backend>(text: &str) {
+fn replay<B: BackendFixedBaseExt>(text: &str) {
     let v = Vectors(parse(text));
     let params = Params::<B>::new(v.int("suite.L") as u8).unwrap();
     let ctx_cred = v.hex("suite.ctx_cred");
@@ -192,11 +192,11 @@ fn replay<B: Backend>(text: &str) {
     }
 }
 
-fn draft_l4<B: Backend>() {
+fn draft_l4<B: BackendFixedBaseExt>() {
     replay::<B>(DRAFT_L4);
 }
 
-fn extended<B: Backend>() {
+fn extended<B: BackendFixedBaseExt>() {
     for (_name, text) in EXTENDED {
         replay::<B>(text);
     }

@@ -93,18 +93,6 @@ impl super::FixedBase<ProjectivePoint> for FixedPoint {
     }
 }
 
-impl super::Backend for RustCrypto {
-    type Scalar = <Self as ec_ihat::backend::Backend>::Scalar;
-    type Point = <Self as ec_ihat::backend::Backend>::Point;
+impl super::BackendFixedBaseExt for RustCrypto {
     type FixedBase = FixedPoint;
-    type Sha256 = <Self as ec_ihat::backend::Backend>::Sha256;
-    type Shake128 = super::shake::RustCryptoShake128;
-
-    fn hash_to_curve(msg: &[&[u8]], dst: &[&[u8]]) -> Option<Self::Point> {
-        <Self as ec_ihat::backend::Backend>::hash_to_curve(msg, dst)
-    }
-
-    fn random_bytes(buf: &mut [u8]) {
-        <Self as ec_ihat::backend::Backend>::random_bytes(buf);
-    }
 }
