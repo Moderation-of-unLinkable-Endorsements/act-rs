@@ -387,8 +387,9 @@ mod parity {
     fn spends_interoperate() {
         let rc = crate::Params::<RustCrypto>::new(6).unwrap();
         let bssl = crate::Params::<BoringSsl>::new(6).unwrap();
-        let key_rc = crate::SecretKey::<RustCrypto>::generate().unwrap();
-        let key_bssl = crate::SecretKey::<BoringSsl>::from_bytes(&key_rc.to_bytes()).unwrap();
+        let seed = [9u8; crate::SEED_LENGTH];
+        let key_rc = crate::SecretKey::<RustCrypto>::from_seed(&seed).unwrap();
+        let key_bssl = crate::SecretKey::<BoringSsl>::from_seed(&seed).unwrap();
         let pk_bssl =
             crate::PublicKey::<BoringSsl>::from_bytes(&key_rc.public_key().to_bytes()).unwrap();
         // Client on BoringSSL, Moderator on RustCrypto.

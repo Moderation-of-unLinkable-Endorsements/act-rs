@@ -50,7 +50,7 @@ fn shapes<B: Backend>(params: &Params<B>) -> [(&'static str, u64, u64, u64); 4] 
 fn bench_backend<B: Backend>(c: &mut Criterion, backend: &str) {
     for l in [8u8, 16, 64] {
         let params = Params::<B>::new(l).unwrap();
-        let key = SecretKey::<B>::generate().unwrap();
+        let key = SecretKey::<B>::from_seed(&B::generate_seed()).unwrap();
         let public_key = key.public_key();
         let mut group = c.benchmark_group(format!("{backend}/L{l}"));
         group
@@ -60,7 +60,7 @@ fn bench_backend<B: Backend>(c: &mut Criterion, backend: &str) {
         group.bench_function("params_new", |b| b.iter(|| Params::<B>::new(l).unwrap()));
 
         group.bench_function("key_generation", |b| {
-            b.iter(|| SecretKey::<B>::generate().unwrap())
+            b.iter(|| SecretKey::<B>::from_seed(&B::generate_seed()).unwrap())
         });
         group.bench_function("issue_request", |b| {
             b.iter(|| issue_request(&params).unwrap())
