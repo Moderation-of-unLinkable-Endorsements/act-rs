@@ -107,7 +107,7 @@ fn replay<B: Backend>(text: &str) {
     let mut rng = Replay::new(&v.hex("issue.request.rand"));
     let (state, request) = issue_request_with(&params, &mut rng).unwrap();
     rng.finish();
-    assert_eq!(state.to_bytes(), v.hex("issue.request.state"));
+    assert_eq!(*state.to_bytes(), v.hex("issue.request.state"));
     assert_eq!(state.to_bytes().len(), ClientIssuanceState::<B>::LENGTH);
     let encoded = request.to_bytes();
     assert_eq!(encoded, v.hex("issue.request.message"));
@@ -125,7 +125,7 @@ fn replay<B: Backend>(text: &str) {
     assert_eq!(response.balance(), c);
 
     let mut credential = finalize_issue(&params, &public_key, &ctx_cred, state, &response).unwrap();
-    assert_eq!(credential.to_bytes(), v.hex("issue.credential"));
+    assert_eq!(*credential.to_bytes(), v.hex("issue.credential"));
     assert_eq!(credential.to_bytes().len(), Credential::<B>::LENGTH);
     assert_eq!(credential.balance(), c);
 
@@ -145,7 +145,7 @@ fn replay<B: Backend>(text: &str) {
             prove_spend_with(&params, credential, &ctx_cred, s, a, &ctx_spend, &mut rng).unwrap();
         rng.finish();
         assert_eq!(
-            state.to_bytes(),
+            *state.to_bytes(),
             v.hex(&alloc::format!("{key_prefix}.state"))
         );
         assert_eq!(state.remainder(), balance - s);
@@ -176,7 +176,7 @@ fn replay<B: Backend>(text: &str) {
 
         credential = finalize_refund(&params, &public_key, &ctx_cred, state, &refund).unwrap();
         assert_eq!(
-            credential.to_bytes(),
+            *credential.to_bytes(),
             v.hex(&alloc::format!("{key_prefix}.credential"))
         );
         assert_eq!(credential.balance(), balance - s + t);
