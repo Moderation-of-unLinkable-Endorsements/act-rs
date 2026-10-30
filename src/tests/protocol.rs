@@ -23,7 +23,7 @@ use crate::protocol::{
     ClientIssuanceState, ClientSpendState, Credential, IssueRequestMessage, IssueResponseMessage,
     Params, PublicKey, RefundMessage, SecretKey, SpendMessage, finalize_issue, finalize_refund,
     issue_refund, issue_request, issue_request_with, issue_response, prove_spend, prove_spend_with,
-    verify_spend,
+    verify_issue_request, verify_spend,
 };
 use crate::{Error, MAX_BALANCE_WIDTH};
 
@@ -61,7 +61,13 @@ fn new_setup<B: Backend>(l: u8) -> Setup<B> {
 fn issue<B: Backend>(setup: &Setup<B>, ctx: &[u8], c: u64) -> Credential<B> {
     let (state, request) = issue_request(&setup.params).unwrap();
     let request = IssueRequestMessage::from_bytes(&setup.params, &request.to_bytes()).unwrap();
-    let response = issue_response(&setup.params, &setup.key, ctx, c, &request).unwrap();
+    let response = issue_response(
+        &setup.key,
+        ctx,
+        c,
+        verify_issue_request(&setup.params, &request).unwrap(),
+    )
+    .unwrap();
     let response = IssueResponseMessage::from_bytes(&setup.params, &response.to_bytes()).unwrap();
     finalize_issue(&setup.params, &setup.public_key, ctx, state, &response).unwrap()
 }
@@ -112,7 +118,13 @@ fn full_flow<B: Backend>() {
 fn contexts_are_bound<B: Backend>() {
     let setup = new_setup::<B>(4);
     let (state, request) = issue_request(&setup.params).unwrap();
-    let response = issue_response(&setup.params, &setup.key, CTX, 5, &request).unwrap();
+    let response = issue_response(
+        &setup.key,
+        CTX,
+        5,
+        verify_issue_request(&setup.params, &request).unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         finalize_issue(&setup.params, &setup.public_key, b"other", state, &response).unwrap_err(),
         Error::Verify
@@ -178,10 +190,22 @@ fn amounts_are_bounded<B: Backend>() {
     let setup = new_setup::<B>(4);
     let (state, request) = issue_request(&setup.params).unwrap();
     assert_eq!(
-        issue_response(&setup.params, &setup.key, CTX, 16, &request).unwrap_err(),
+        issue_response(
+            &setup.key,
+            CTX,
+            16,
+            verify_issue_request(&setup.params, &request).unwrap()
+        )
+        .unwrap_err(),
         Error::Amount
     );
-    let response = issue_response(&setup.params, &setup.key, CTX, 15, &request).unwrap();
+    let response = issue_response(
+        &setup.key,
+        CTX,
+        15,
+        verify_issue_request(&setup.params, &request).unwrap(),
+    )
+    .unwrap();
     let credential =
         finalize_issue(&setup.params, &setup.public_key, CTX, state, &response).unwrap();
     let cases: [(u64, u64, Error); 4] = [
@@ -311,14 +335,26 @@ fn tampering_is_rejected<B: Backend>() {
     for i in (0..request_bytes.len()).step_by(5) {
         let mut bytes = request_bytes.clone();
         bytes[i] ^= 1;
-        let result = IssueRequestMessage::from_bytes(&setup.params, &bytes)
-            .and_then(|request| issue_response(&setup.params, &setup.key, CTX, 3, &request));
+        let result = IssueRequestMessage::from_bytes(&setup.params, &bytes).and_then(|request| {
+            issue_response(
+                &setup.key,
+                CTX,
+                3,
+                verify_issue_request(&setup.params, &request)?,
+            )
+        });
         assert!(
             matches!(result, Err(Error::Deserialize | Error::Verify)),
             "byte {i}"
         );
     }
-    let response = issue_response(&setup.params, &setup.key, CTX, 3, &request).unwrap();
+    let response = issue_response(
+        &setup.key,
+        CTX,
+        3,
+        verify_issue_request(&setup.params, &request).unwrap(),
+    )
+    .unwrap();
     let response_bytes = response.to_bytes();
     let state_bytes = state.to_bytes();
     for i in (0..response_bytes.len()).step_by(5) {

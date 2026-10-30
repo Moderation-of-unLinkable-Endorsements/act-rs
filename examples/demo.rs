@@ -18,7 +18,7 @@
 use act::{
     Credential, IssueRequestMessage, IssueResponseMessage, Params, RefundMessage, SecretKey,
     SpendMessage, finalize_issue, finalize_refund, issue_refund, issue_request, issue_response,
-    prove_spend, verify_spend,
+    prove_spend, verify_issue_request, verify_spend,
 };
 
 fn main() -> Result<(), act::Error> {
@@ -30,7 +30,7 @@ fn main() -> Result<(), act::Error> {
     // Issuance, through the wire encodings.
     let (state, request) = issue_request(&params)?;
     let request = IssueRequestMessage::from_bytes(&params, &request.to_bytes())?;
-    let response = issue_response(&params, &key, ctx_cred, 10, &request)?;
+    let response = issue_response(&key, ctx_cred, 10, verify_issue_request(&params, &request)?)?;
     let response = IssueResponseMessage::from_bytes(&params, &response.to_bytes())?;
     let mut credential: Credential =
         finalize_issue(&params, &public_key, ctx_cred, state, &response)?;

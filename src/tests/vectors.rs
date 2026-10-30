@@ -26,7 +26,8 @@ use crate::backend::{Backend, Point};
 use crate::protocol::{
     ClientIssuanceState, ClientSpendState, Credential, IssueRequestMessage, IssueResponseMessage,
     Params, RefundMessage, SecretKey, SpendMessage, finalize_issue, finalize_refund,
-    issue_refund_with, issue_request_with, issue_response_with, prove_spend_with, verify_spend,
+    issue_refund_with, issue_request_with, issue_response_with, prove_spend_with,
+    verify_issue_request, verify_spend,
 };
 
 /// The draft's vectors, `L = 4`.
@@ -116,7 +117,14 @@ fn replay<B: Backend>(text: &str) {
 
     let c = v.int("issue.response.c");
     let mut rng = Replay::new(&v.hex("issue.response.rand"));
-    let response = issue_response_with(&params, &key, &ctx_cred, c, &request, &mut rng).unwrap();
+    let response = issue_response_with(
+        &key,
+        &ctx_cred,
+        c,
+        verify_issue_request(&params, &request).unwrap(),
+        &mut rng,
+    )
+    .unwrap();
     rng.finish();
     let encoded = response.to_bytes();
     assert_eq!(encoded, v.hex("issue.response.message"));

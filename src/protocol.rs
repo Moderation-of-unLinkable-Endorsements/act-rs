@@ -330,6 +330,18 @@ impl<B: Backend> SpendMessage<B> {
     }
 }
 
+/// Evidence that an [`IssueRequestMessage`] passed [`verify_issue_request`]
+/// under a specific configuration.
+///
+/// This value cannot be constructed or cloned by callers, so
+/// [`issue_response`] never signs an unchecked request.
+#[must_use = "pass this value to issue_response"]
+#[derive(Debug)]
+pub struct VerifiedIssueRequest<'a, B: Backend = DefaultBackend> {
+    params: &'a Params<B>,
+    request: &'a IssueRequestMessage<B>,
+}
+
 /// Evidence that a [`SpendMessage`] passed [`verify_spend`] under a specific
 /// Moderator key, configuration, credential context, and spend context.
 ///
@@ -658,43 +670,45 @@ pub(crate) fn issue_request_with<B: Backend, R: Random>(
     ))
 }
 
-/// `IssueResponse`: checks the request and signs a Credential with balance
-/// `c` under `ctx_cred`.
-pub fn issue_response<B: Backend>(
-    params: &Params<B>,
-    key: &SecretKey<B>,
-    ctx_cred: &[u8],
-    c: u64,
-    request: &IssueRequestMessage<B>,
-) -> Result<IssueResponseMessage<B>, Error> {
-    issue_response_with(
-        params,
-        key,
-        ctx_cred,
-        c,
-        request,
-        &mut SystemRandom::<B>::new(),
-    )
-}
-
-pub(crate) fn issue_response_with<B: Backend, R: Random>(
-    params: &Params<B>,
-    key: &SecretKey<B>,
-    ctx_cred: &[u8],
-    c: u64,
-    request: &IssueRequestMessage<B>,
-    rng: &mut R,
-) -> Result<IssueResponseMessage<B>, Error> {
-    let gens = &params.gens;
-    params.check_amount(c)?;
+/// `IssueResponse`, first half: checks the request's proof, returning the
+/// evidence required by [`issue_response`].
+///
+/// Lets the Moderator reject a malformed request before it commits any
+/// other state, such as a redemption, and sign only afterwards.
+pub fn verify_issue_request<'a, B: Backend>(
+    params: &'a Params<B>,
+    request: &'a IssueRequestMessage<B>,
+) -> Result<VerifiedIssueRequest<'a, B>, Error> {
     let statement = Commitment {
-        gens,
+        gens: &params.gens,
         k: &request.k_commitment,
     };
     sigma::verify::<B, _>(&params.sid_issue_request, &statement, &request.pok)?;
+    Ok(VerifiedIssueRequest { params, request })
+}
 
+/// `IssueResponse`, second half: signs a Credential with balance `c` under
+/// `ctx_cred` for a request checked by [`verify_issue_request`].
+pub fn issue_response<B: Backend>(
+    key: &SecretKey<B>,
+    ctx_cred: &[u8],
+    c: u64,
+    verified: VerifiedIssueRequest<'_, B>,
+) -> Result<IssueResponseMessage<B>, Error> {
+    issue_response_with(key, ctx_cred, c, verified, &mut SystemRandom::<B>::new())
+}
+
+pub(crate) fn issue_response_with<B: Backend, R: Random>(
+    key: &SecretKey<B>,
+    ctx_cred: &[u8],
+    c: u64,
+    verified: VerifiedIssueRequest<'_, B>,
+    rng: &mut R,
+) -> Result<IssueResponseMessage<B>, Error> {
+    let VerifiedIssueRequest { params, request } = verified;
+    params.check_amount(c)?;
     let ctx = context_scalar::<B>(ctx_cred)?;
-    let x_a = issuance_message(gens, c, &ctx, &request.k_commitment);
+    let x_a = issuance_message(&params.gens, c, &ctx, &request.k_commitment);
     let (a, e, pok) = sign(key, b"IssueResponse", &params.sid_issue_response, &x_a, rng)?;
     Ok(IssueResponseMessage { a, e, c, pok })
 }

@@ -24,7 +24,7 @@ use act::backend::Backend;
 use act::{
     ClientIssuanceState, ClientSpendState, Credential, Params, SecretKey, SpendMessage,
     finalize_issue, finalize_refund, issue_refund, issue_request, issue_response, prove_spend,
-    verify_spend,
+    verify_issue_request, verify_spend,
 };
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 
@@ -68,9 +68,23 @@ fn bench_backend<B: Backend>(c: &mut Criterion, backend: &str) {
         let (state, request) = issue_request(&params).unwrap();
         let balance = balance(&params);
         group.bench_function("issue_response", |b| {
-            b.iter(|| issue_response(&params, &key, CTX_CRED, balance, &request).unwrap())
+            b.iter(|| {
+                issue_response(
+                    &key,
+                    CTX_CRED,
+                    balance,
+                    verify_issue_request(&params, &request).unwrap(),
+                )
+                .unwrap()
+            })
         });
-        let response = issue_response(&params, &key, CTX_CRED, balance, &request).unwrap();
+        let response = issue_response(
+            &key,
+            CTX_CRED,
+            balance,
+            verify_issue_request(&params, &request).unwrap(),
+        )
+        .unwrap();
         let state_bytes = state.to_bytes();
         group.bench_function("finalize_issue", |b| {
             b.iter_batched(
