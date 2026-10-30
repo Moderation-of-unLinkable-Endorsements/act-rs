@@ -21,6 +21,8 @@
 
 use alloc::vec::Vec;
 
+use zeroize::Zeroizing;
+
 use crate::Error;
 use crate::backend::{Backend, POINT_LENGTH, Point, SCALAR_LENGTH, Scalar};
 use crate::hash::require;
@@ -257,13 +259,13 @@ impl<B: Backend> Credential<B> {
 
     /// Encodes as `Scalar k || uint64 c || Scalar r || Element A || Scalar e`,
     /// for storage. The encoding is secret.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(Self::LENGTH);
-        out.extend_from_slice(&self.k.to_bytes());
+    pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
+        let mut out = Zeroizing::new(Vec::with_capacity(Self::LENGTH));
+        out.extend_from_slice(Zeroizing::new(self.k.to_bytes()).as_ref());
         out.extend_from_slice(&self.c.to_be_bytes());
-        out.extend_from_slice(&self.r.to_bytes());
+        out.extend_from_slice(Zeroizing::new(self.r.to_bytes()).as_ref());
         out.extend_from_slice(&point_bytes(&self.a));
-        out.extend_from_slice(&self.e.to_bytes());
+        out.extend_from_slice(Zeroizing::new(self.e.to_bytes()).as_ref());
         debug_assert_eq!(out.len(), Self::LENGTH);
         out
     }
@@ -289,10 +291,10 @@ impl<B: Backend> ClientIssuanceState<B> {
 
     /// Encodes as `Scalar k || Scalar r || Element K`, for storage. The
     /// encoding is secret.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(Self::LENGTH);
-        out.extend_from_slice(&self.k.to_bytes());
-        out.extend_from_slice(&self.r.to_bytes());
+    pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
+        let mut out = Zeroizing::new(Vec::with_capacity(Self::LENGTH));
+        out.extend_from_slice(Zeroizing::new(self.k.to_bytes()).as_ref());
+        out.extend_from_slice(Zeroizing::new(self.r.to_bytes()).as_ref());
         out.extend_from_slice(&point_bytes(&self.k_commitment));
         debug_assert_eq!(out.len(), Self::LENGTH);
         out
@@ -317,10 +319,10 @@ impl<B: Backend> ClientSpendState<B> {
 
     /// Encodes as `Scalar kstar || Scalar r_star || uint64 v1 || uint64 s ||
     /// uint64 a || Element K_prime`, for storage. The encoding is secret.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(Self::LENGTH);
-        out.extend_from_slice(&self.kstar.to_bytes());
-        out.extend_from_slice(&self.r_star.to_bytes());
+    pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
+        let mut out = Zeroizing::new(Vec::with_capacity(Self::LENGTH));
+        out.extend_from_slice(Zeroizing::new(self.kstar.to_bytes()).as_ref());
+        out.extend_from_slice(Zeroizing::new(self.r_star.to_bytes()).as_ref());
         out.extend_from_slice(&self.v1.to_be_bytes());
         out.extend_from_slice(&self.s.to_be_bytes());
         out.extend_from_slice(&self.a.to_be_bytes());
