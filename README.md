@@ -1,5 +1,12 @@
 # act-rs
 
+> **Moved.** ACT now lives in
+> [mole-p256-rs](https://github.com/Moderation-of-unLinkable-Endorsements/mole-p256-rs)
+> as the `ec-act` crate, in
+> [`crates/ec-act`](https://github.com/Moderation-of-unLinkable-Endorsements/mole-p256-rs/tree/main/crates/ec-act),
+> with the full history of this repository. Open issues and pull requests
+> there; this repository is archived.
+
 A Rust implementation of **Anonymous Credit Tokens (ACT)**, the MOLE
 Credential scheme of
 [draft-authors-mole-act](https://moderation-of-unlinkable-endorsements.github.io/internet-drafts/draft-authors-mole-act.html),
